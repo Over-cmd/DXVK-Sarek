@@ -23,7 +23,7 @@ jobs:
           ref: 'main'
           fetch-depth: 0
 
-      # 2. Instalar herramientas e inyectar físicamente las cabeceras oficiales de Vulkan en la carpeta include/
+      # 2. Instalar herramientas e inyectar físicamente las cabeceras oficiales de Vulkan locales
       - name: Instalar Herramientas e Inyectar Vulkan-Headers Nativos
         run: |
           sudo sed -i 's#http://ubuntu.com#http://ubuntu.com#g' /etc/apt/sources.list || true
@@ -31,17 +31,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y meson ninja-build glslang-tools g++-mingw-w64-x86-64 g++-mingw-w64-i686 libvulkan-dev zip curl
           
-          echo "Limpiando y clonando el repositorio oficial de Vulkan-Headers en include/..."
+          echo "Inyectando las cabeceras de Vulkan del sistema en el árbol local..."
+          # Limpiamos y estructuramos la carpeta include interna que Meson necesita verificar
           rm -rf include/vulkan
-          mkdir -p include
+          mkdir -p include/vulkan
           
-          # Clonamos de forma directa las cabeceras originales de Khronos Group en la carpeta include
-          git clone --depth 1 https://github.com /tmp/vulkan_headers
+          # TRUCO DE COMPILACIÓN ABSOLUTO (INMUNE A INTERNET): Copiar el SDK local ya instalado por apt
+          cp -r /usr/include/vulkan/* include/vulkan/
           
-          # Sincronizamos la carpeta de cabeceras para que coincida exactamente con lo que busca meson.build
-          cp -r /tmp/vulkan_headers/include/* include/
-          
-          echo "¡Estructura interna de Vulkan-Headers inyectada con éxito!"
+          echo "¡Estructura interna de Vulkan-Headers inyectada con éxito de forma local!"
 
       # 3. PARCHE FUSIÓN PIPPETOCRYPTO: Sincronizar Sarek con el Wrapper de texturas BCN
       - name: Inyectar Parche de Compatibilidad PippetoCrypto BCN Layer
@@ -76,7 +74,7 @@ jobs:
       # 6. COMPILACIÓN DE 64 BITS (x64) CON MINGW NATIVO
       - name: Configurar y Compilar DXVK Sarek x64
         run: |
-          # Añadimos la bandera -Iinclude de forma explícita para que el compilador lea la carpeta inyectada
+          # El flag -I../include fuerza a que el preprocesador lea las cabeceras locales copiadas
           meson setup build_x64 \
             --cross-file build-win64.txt \
             --buildtype release \
@@ -145,7 +143,7 @@ jobs:
           gh release create "$TAG_NAME" \
             --repo "${{ github.repository }}" \
             --title "DXVK-Sarek 1.12.0 Full Async BCN - Unisoc T618 (Build #${{ github.run_number }})" \
-            --notes "Compilación maestra basada en DXVK-Sarek con inyección directa de Vulkan-Headers legítimos en el árbol de dependencias local." \
+            --notes "Compilación maestra basada en DXVK-Sarek con inyección local directa de Vulkan-Headers desde la paquetería interna del sistema." \
             dxvk_t618_sarek_bcn.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
