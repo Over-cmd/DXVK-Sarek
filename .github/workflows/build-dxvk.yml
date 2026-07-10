@@ -32,21 +32,34 @@ jobs:
           sudo apt-get install -y meson ninja-build glslang-tools g++-mingw-w64-x86-64 g++-mingw-w64-i686 libvulkan-dev zip
           
           echo "Inyectando cabeceras nativas de Vulkan en las carpetas de sistema de MinGW..."
-          # Creamos la estructura exacta esperada en las dependencias cruzadas de 64 y 32 bits de Windows
           sudo mkdir -p /usr/x86_64-w64-mingw32/include/vulkan
           sudo mkdir -p /usr/i686-w64-mingw32/include/vulkan
-          
-          # Sincronizamos físicamente los archivos .h del sistema operativo local
           sudo cp -r /usr/include/vulkan/* /usr/x86_64-w64-mingw32/include/vulkan/
           sudo cp -r /usr/include/vulkan/* /usr/i686-w64-mingw32/include/vulkan/
           
-          # Resguardo extra dentro de la propia jerarquía interna del repositorio
+          # Duplicamos la jerarquía local interna exigida por el código
           mkdir -p include/vulkan
           cp -r /usr/include/vulkan/* include/vulkan/
           
           echo "¡Entorno de compilación cruzado blindado!"
 
-      # 3. PARCHE FUSIÓN PIPPETOCRYPTO: Sincronizar Sarek con el Wrapper de texturas BCN
+      # 3. PARCHE DE PROPIEDADES CROSS-COMPILER: Forzar a Meson a compilar Vulkan con flags de Windows
+      - name: Forzar Flags de Plataforma Windows en Archivos Cross de Meson
+        run: |
+          echo "Modificando build-win64.txt y build-win32.txt..."
+          # Añadimos los argumentos de preprocesamiento de Windows en los archivos de compilación cruzada del repositorio
+          sed -i "s/c_args = \[-O3\]/c_args = ['-O3', '-DVK_USE_PLATFORM_WIN32_KHR', '-ffast-math']/g" build-win64.txt || true
+          sed -i "s/cpp_args = \[-O3\]/cpp_args = ['-O3', '-DVK_USE_PLATFORM_WIN32_KHR', '-ffast-math']/g" build-win64.txt || true
+          sed -i "s/c_args = \[-O3\]/c_args = ['-O3', '-DVK_USE_PLATFORM_WIN32_KHR', '-ffast-math']/g" build-win32.txt || true
+          sed -i "s/cpp_args = \[-O3\]/cpp_args = ['-O3', '-DVK_USE_PLATFORM_WIN32_KHR', '-ffast-math']/g" build-win32.txt || true
+          
+          # Resguardo por si el formato usa comillas dobles
+          echo "c_args = ['-DVK_USE_PLATFORM_WIN32_KHR']" >> build-win64.txt
+          echo "cpp_args = ['-DVK_USE_PLATFORM_WIN32_KHR']" >> build-win64.txt
+          echo "c_args = ['-DVK_USE_PLATFORM_WIN32_KHR']" >> build-win32.txt
+          echo "cpp_args = ['-DVK_USE_PLATFORM_WIN32_KHR']" >> build-win32.txt
+
+      # 4. PARCHE FUSIÓN PIPPETOCRYPTO: Sincronizar Sarek con el Wrapper de texturas BCN
       - name: Inyectar Parche de Compatibilidad PippetoCrypto BCN Layer
         run: |
           echo "Habilitando el paso libre de texturas asíncronas para cooperar con el Wrapper..."
@@ -57,7 +70,7 @@ jobs:
           find . -type f -name "*format*.cpp" -exec sed -i 's/textureCompressionBC = false/textureCompressionBC = true/g' {} + || true
           find . -type f -name "*device*.cpp" -exec sed -i 's/textureCompressionBC = false/textureCompressionBC = true/g' {} + || true
 
-      # 4. PARCHE GCC 13: Inyectar <cstdint> en los archivos matemáticos específicos de Sarek
+      # 5. PARCHE GCC 13: Inyectar <cstdint> en los archivos matemáticos específicos de Sarek
       - name: Corregir Cabeceras de Tipos de Datos (cstdint Patch)
         run: |
           echo "Aplicando parches de tipos de datos de forma quirúrgica por archivo..."
@@ -69,38 +82,34 @@ jobs:
           sed -i 's/include <cstdint>/include <stdint.h>/g' src/util/sha1/sha1.h || true
           sed -i '2i#include <stdint.h>' src/util/sha1/sha1.h || true
 
-      # 5. PARCHE COMPATIBILIDAD VULKAN 1.1: Rebajar los requisitos a nivel de código para tu Mali-G52 MP2
+      # 6. PARCHE COMPATIBILIDAD VULKAN 1.1: Rebajar los requisitos a nivel de código para tu GPU Mali-G52 MP2
       - name: Aplicar Parche de Compatibilidad Vulkan 1.1 Estable
         run: |
           echo "Rebajando requisitos de API de Vulkan en el código..."
           find . -type f \( -name "*.cpp" -o -name "*.h" -o -name "*.txt" \) -exec sed -i 's/VK_API_VERSION_1_3/VK_API_VERSION_1_1/g' {} + || true
           find . -type f \( -name "*.cpp" -o -name "*.h" -o -name "*.txt" \) -exec sed -i 's/VK_API_VERSION_1_2/VK_API_VERSION_1_1/g' {} + || true
 
-      # 6. COMPILACIÓN DE 64 BITS (x64) CON MINGW NATIVO
+      # 7. COMPILACIÓN DE 64 BITS (x64) CON MINGW NATIVO
       - name: Configurar y Compilar DXVK Sarek x64
         run: |
           meson setup build_x64 \
             --cross-file build-win64.txt \
             --buildtype release \
-            -Dstrip=true \
-            -Dc_args="-O3 -ffast-math" \
-            -Dcpp_args="-O3 -ffast-math"
+            -Dstrip=true
 
           ninja -C build_x64
 
-      # 7. COMPILACIÓN DE 32 BITS (x32) CON MINGW NATIVO
+      # 8. COMPILACIÓN DE 32 BITS (x32) CON MINGW NATIVO
       - name: Configurar y Compilar DXVK Sarek x32
         run: |
           meson setup build_x32 \
             --cross-file build-win32.txt \
             --buildtype release \
-            -Dstrip=true \
-            -Dc_args="-O3 -ffast-math" \
-            -Dcpp_args="-O3 -ffast-math"
+            -Dstrip=true
 
           ninja -C build_x32
 
-      # 8. CREACIÓN DEL ARCHIVO DXVK.CONF PREOPTIMIZADO PARA JUEGOS EN ANDROID
+      # 9. CREACIÓN DEL ARCHIVO DXVK.CONF PREOPTIMIZADO PARA JUEGOS EN ANDROID
       - name: Generar Archivo dxvk.conf de Ingeniería
         run: |
           mkdir -p /tmp/config_build
@@ -116,7 +125,7 @@ jobs:
           dxvk.zeroInitWorkgroupMemory = True
           EOF
 
-      # 9. ESTRUCTURAR EL PAQUETE EN EL FORMATO TOTAL (DX8, DX9, DX10, DX11 + DXVK.CONF)
+      # 10. ESTRUCTURAR EL PAQUETE EN EL FORMATO TOTAL (DX8, DX9, DX10, DX11 + DXVK.CONF)
       - name: Estructurar Carpetas Completa x32 y x64
         run: |
           mkdir -p dxvk_package/x32
@@ -139,7 +148,7 @@ jobs:
           zip -q -r ../dxvk_t618_sarek_bcn.zip x32 x64
           cd ..
 
-      # 10. PUBLICACIÓN EN LAS RELEASES DE TU FORK PERMANENTE
+      # 11. PUBLICACIÓN EN LAS RELEASES DE TU FORK PERMANENTE
       - name: Publicar DXVK en Releases
         run: |
           TAG_NAME="v1.12.0-sarek-bcn-${{ github.run_number }}"
@@ -147,7 +156,7 @@ jobs:
           gh release create "$TAG_NAME" \
             --repo "${{ github.repository }}" \
             --title "DXVK-Sarek 1.12.0 Full Async BCN - Unisoc T618 (Build #${{ github.run_number }})" \
-            --notes "Compilación maestra basada en DXVK-Sarek (Mali GPU Edition) con inyección directa de Vulkan-Headers en las carpetas nativas de MinGW." \
+            --notes "Compilación maestra basada en DXVK-Sarek con inyección forzada del flag de Windows VK_USE_PLATFORM_WIN32_KHR." \
             dxvk_t618_sarek_bcn.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
