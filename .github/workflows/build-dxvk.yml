@@ -23,20 +23,28 @@ jobs:
           ref: 'main'
           fetch-depth: 0
 
-      # 2. Instalar herramientas y parchar la ruta de Vulkan-Headers ausente
-      - name: Instalar Herramientas Globales y Vincular Vulkan Headers
+      # 2. Instalar herramientas y parchar la raíz de MinGW con los Vulkan-Headers reales
+      - name: Instalar Herramientas Globales e Inyectar Vulkan Headers en el Toolchain
         run: |
           sudo sed -i 's#http://ubuntu.com#http://ubuntu.com#g' /etc/apt/sources.list || true
           sudo sed -i 's#http://ubuntu.com#http://ubuntu.com#g' /etc/apt/sources.list || true
           sudo apt-get update
           sudo apt-get install -y meson ninja-build glslang-tools g++-mingw-w64-x86-64 g++-mingw-w64-i686 libvulkan-dev zip
           
-          echo "Vinculando las cabeceras de Vulkan del sistema en el árbol de Sarek..."
-          # Creamos la subcarpeta include requerida por el meson.build si no existe
+          echo "Inyectando cabeceras nativas de Vulkan en las carpetas de sistema de MinGW..."
+          # Creamos la estructura exacta esperada en las dependencias cruzadas de 64 y 32 bits de Windows
+          sudo mkdir -p /usr/x86_64-w64-mingw32/include/vulkan
+          sudo mkdir -p /usr/i686-w64-mingw32/include/vulkan
+          
+          # Sincronizamos físicamente los archivos .h del sistema operativo local
+          sudo cp -r /usr/include/vulkan/* /usr/x86_64-w64-mingw32/include/vulkan/
+          sudo cp -r /usr/include/vulkan/* /usr/i686-w64-mingw32/include/vulkan/
+          
+          # Resguardo extra dentro de la propia jerarquía interna del repositorio
           mkdir -p include/vulkan
-          # Copiamos de forma física todas las estructuras legítimas de Khronos de la máquina virtual
           cp -r /usr/include/vulkan/* include/vulkan/
-          echo "¡Estructura de Vulkan-Headers fijada!"
+          
+          echo "¡Entorno de compilación cruzado blindado!"
 
       # 3. PARCHE FUSIÓN PIPPETOCRYPTO: Sincronizar Sarek con el Wrapper de texturas BCN
       - name: Inyectar Parche de Compatibilidad PippetoCrypto BCN Layer
@@ -75,8 +83,8 @@ jobs:
             --cross-file build-win64.txt \
             --buildtype release \
             -Dstrip=true \
-            -Dc_args="-O3 -ffast-math -I../include" \
-            -Dcpp_args="-O3 -ffast-math -I../include"
+            -Dc_args="-O3 -ffast-math" \
+            -Dcpp_args="-O3 -ffast-math"
 
           ninja -C build_x64
 
@@ -87,8 +95,8 @@ jobs:
             --cross-file build-win32.txt \
             --buildtype release \
             -Dstrip=true \
-            -Dc_args="-O3 -ffast-math -I../include" \
-            -Dcpp_args="-O3 -ffast-math -I../include"
+            -Dc_args="-O3 -ffast-math" \
+            -Dcpp_args="-O3 -ffast-math"
 
           ninja -C build_x32
 
@@ -139,7 +147,7 @@ jobs:
           gh release create "$TAG_NAME" \
             --repo "${{ github.repository }}" \
             --title "DXVK-Sarek 1.12.0 Full Async BCN - Unisoc T618 (Build #${{ github.run_number }})" \
-            --notes "Compilación maestra basada en DXVK-Sarek (Mali GPU Edition) con inyección forzada de Vulkan-Headers nativos de Ubuntu." \
+            --notes "Compilación maestra basada en DXVK-Sarek (Mali GPU Edition) con inyección directa de Vulkan-Headers en las carpetas nativas de MinGW." \
             dxvk_t618_sarek_bcn.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
