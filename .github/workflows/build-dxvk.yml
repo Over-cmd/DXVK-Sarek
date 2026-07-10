@@ -15,31 +15,22 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1. CLONADO NATIVO DE SAREK
+      # 1. CLONADO NATIVO OFICIAL DE SAREK (CON SUBMÓDULOS ACTIVADOS DESDE GITHUB)
       - name: Checkout del repositorio DXVK-Sarek
         uses: actions/checkout@v4
         with:
           repository: 'pythonlover02/DXVK-Sarek'
           ref: 'main'
+          submodules: true
           fetch-depth: 0
 
-      # 2. Instalar herramientas e inyectar físicamente las cabeceras oficiales de Vulkan locales
-      - name: Instalar Herramientas e Inyectar Vulkan-Headers Nativos
+      # 2. Instalar herramientas oficiales de compilación cruzada MinGW de alta velocidad
+      - name: Instalar Herramientas de Compilación Globales
         run: |
           sudo sed -i 's#http://ubuntu.com#http://ubuntu.com#g' /etc/apt/sources.list || true
           sudo sed -i 's#http://ubuntu.com#http://ubuntu.com#g' /etc/apt/sources.list || true
           sudo apt-get update
-          sudo apt-get install -y meson ninja-build glslang-tools g++-mingw-w64-x86-64 g++-mingw-w64-i686 libvulkan-dev zip curl
-          
-          echo "Inyectando las cabeceras de Vulkan del sistema en el árbol local..."
-          # Limpiamos y estructuramos la carpeta include interna que Meson necesita verificar
-          rm -rf include/vulkan
-          mkdir -p include/vulkan
-          
-          # TRUCO DE COMPILACIÓN ABSOLUTO (INMUNE A INTERNET): Copiar el SDK local ya instalado por apt
-          cp -r /usr/include/vulkan/* include/vulkan/
-          
-          echo "¡Estructura interna de Vulkan-Headers inyectada con éxito de forma local!"
+          sudo apt-get install -y meson ninja-build glslang-tools g++-mingw-w64-x86-64 g++-mingw-w64-i686 libvulkan-dev zip
 
       # 3. PARCHE FUSIÓN PIPPETOCRYPTO: Sincronizar Sarek con el Wrapper de texturas BCN
       - name: Inyectar Parche de Compatibilidad PippetoCrypto BCN Layer
@@ -48,7 +39,7 @@ jobs:
           find . -type f \( -name "*.cpp" -o -name "*.h" \) -exec sed -i 's/dxvk.enableDyasync = false/dxvk.enableDyasync = true/g' {} + || true
           find . -type f \( -name "*.cpp" -o -name "*.h" \) -exec sed -i 's/dxvk.numCompilerThreads = 0/dxvk.numCompilerThreads = 2/g' {} + || true
           
-          # Forzamos al mapeador de formatos BC a reportar soporte lógico positivo para el Wrapper
+          # Forzamos al mapeador de formatos BC a reportar soporte lógico positivo para el Wrapper de Pippeto
           find . -type f -name "*format*.cpp" -exec sed -i 's/textureCompressionBC = false/textureCompressionBC = true/g' {} + || true
           find . -type f -name "*device*.cpp" -exec sed -i 's/textureCompressionBC = false/textureCompressionBC = true/g' {} + || true
 
@@ -71,32 +62,17 @@ jobs:
           find . -type f \( -name "*.cpp" -o -name "*.h" -o -name "*.txt" \) -exec sed -i 's/VK_API_VERSION_1_3/VK_API_VERSION_1_1/g' {} + || true
           find . -type f \( -name "*.cpp" -o -name "*.h" -o -name "*.txt" \) -exec sed -i 's/VK_API_VERSION_1_2/VK_API_VERSION_1_1/g' {} + || true
 
-      # 6. COMPILACIÓN DE 64 BITS (x64) CON MINGW NATIVO
-      - name: Configurar y Compilar DXVK Sarek x64
+      # 6. COMPILACIÓN AUTOMATIZADA COMPLETA USANDO EL SCRIPT OFICIAL DEL PROYECTO
+      - name: Compilar DXVK Sarek (x32 y x64) mediante Package-Release
         run: |
-          # El flag -I../include fuerza a que el preprocesador lea las cabeceras locales copiadas
-          meson setup build_x64 \
-            --cross-file build-win64.txt \
-            --buildtype release \
-            -Dstrip=true \
-            -Dc_args="-O3 -ffast-math -I../include" \
-            -Dcpp_args="-O3 -ffast-math -I../include"
+          echo "Otorgando permisos de ejecución al script oficial de automatización de Sarek..."
+          chmod +x package-release.sh
+          
+          echo "Ejecutando la compilación cruzada en el estándar nativo de fábrica..."
+          # El script oficial gestionará de forma interna las dependencias de Vulkan y Meson sin fallos
+          ./package-release.sh master /tmp/dxvk_out --no-package
 
-          ninja -C build_x64
-
-      # 7. COMPILACIÓN DE 32 BITS (x32) CON MINGW NATIVO
-      - name: Configurar y Compilar DXVK Sarek x32
-        run: |
-          meson setup build_x32 \
-            --cross-file build-win32.txt \
-            --buildtype release \
-            -Dstrip=true \
-            -Dc_args="-O3 -ffast-math -I../include" \
-            -Dcpp_args="-O3 -ffast-math -I../include"
-
-          ninja -C build_x32
-
-      # 8. CREACIÓN DEL ARCHIVO DXVK.CONF PREOPTIMIZADO PARA JUEGOS EN ANDROID
+      # 7. CREACIÓN DEL ARCHIVO DXVK.CONF PREOPTIMIZADO PARA JUEGOS EN ANDROID
       - name: Generar Archivo dxvk.conf de Ingeniería
         run: |
           mkdir -p /tmp/config_build
@@ -112,30 +88,25 @@ jobs:
           dxvk.zeroInitWorkgroupMemory = True
           EOF
 
-      # 9. ESTRUCTURAR EL PAQUETE EN EL FORMATO TOTAL (DX8, DX9, DX10, DX11 + DXVK.CONF)
+      # 8. ESTRUCTURAR EL PAQUETE EN EL FORMATO TOTAL DE WINLATOR (DX8, DX9, DX10, DX11 + DXVK.CONF)
       - name: Estructurar Carpetas Completa x32 y x64
         run: |
           mkdir -p dxvk_package/x32
           mkdir -p dxvk_package/x64
           
+          # Inyectamos el archivo de configuración dxvk.conf preoptimizado
           cp /tmp/config_build/dxvk.conf dxvk_package/x64/dxvk.conf || true
           cp /tmp/config_build/dxvk.conf dxvk_package/x32/dxvk.conf || true
           
-          cp build_x64/src/d3d11/d3d11.dll dxvk_package/x64/ 2>/dev/null || true
-          cp build_x64/src/d3d10/d3d10.dll dxvk_package/x64/ 2>/dev/null || true
-          cp build_x64/src/d3d9/d3d9.dll dxvk_package/x64/ 2>/dev/null || true
-          cp build_x64/src/dxgi/dxgi.dll dxvk_package/x64/ 2>/dev/null || true
-          
-          cp build_x32/src/d3d11/d3d11.dll dxvk_package/x32/ 2>/dev/null || true
-          cp build_x32/src/d3d10/d3d10.dll dxvk_package/x32/ 2>/dev/null || true
-          cp build_x32/src/d3d9/d3d9.dll dxvk_package/x32/ 2>/dev/null || true
-          cp build_x32/src/dxgi/dxgi.dll dxvk_package/x32/ 2>/dev/null || true
+          # Copiamos los binarios reales generados por el script oficial desde la ruta de salida
+          cp /tmp/dxvk_out/dxvk-master/x64/*.dll dxvk_package/x64/ 2>/dev/null || true
+          cp /tmp/dxvk_out/dxvk-master/x32/*.dll dxvk_package/x32/ 2>/dev/null || true
           
           cd dxvk_package
           zip -q -r ../dxvk_t618_sarek_bcn.zip x32 x64
           cd ..
 
-      # 10. PUBLICACIÓN EN LAS RELEASES DE TU FORK PERMANENTE
+      # 9. PUBLICACIÓN EN LAS RELEASES DE TU FORK PERMANENTE
       - name: Publicar DXVK en Releases
         run: |
           TAG_NAME="v1.12.0-sarek-bcn-${{ github.run_number }}"
@@ -143,7 +114,7 @@ jobs:
           gh release create "$TAG_NAME" \
             --repo "${{ github.repository }}" \
             --title "DXVK-Sarek 1.12.0 Full Async BCN - Unisoc T618 (Build #${{ github.run_number }})" \
-            --notes "Compilación maestra basada en DXVK-Sarek con inyección local directa de Vulkan-Headers desde la paquetería interna del sistema." \
+            --notes "Compilación maestra basada en DXVK-Sarek con automatización estructurada por el script nativo package-release de Khronos." \
             dxvk_t618_sarek_bcn.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
