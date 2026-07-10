@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1. CLONADO NATIVO DE SAREK: Usamos el repositorio central activo que tiene los parches de Mali
+      # 1. CLONADO NATIVO DE SAREK
       - name: Checkout del repositorio DXVK-Sarek
         uses: actions/checkout@v4
         with:
@@ -23,30 +23,33 @@ jobs:
           ref: 'main'
           fetch-depth: 0
 
-      # 2. Instalar herramientas oficiales de compilación cruzada MinGW de alta velocidad
-      - name: Instalar Herramientas de Compilación Globales
+      # 2. Instalar herramientas y parchar la ruta de Vulkan-Headers ausente
+      - name: Instalar Herramientas Globales y Vincular Vulkan Headers
         run: |
           sudo sed -i 's#http://ubuntu.com#http://ubuntu.com#g' /etc/apt/sources.list || true
           sudo sed -i 's#http://ubuntu.com#http://ubuntu.com#g' /etc/apt/sources.list || true
           sudo apt-get update
           sudo apt-get install -y meson ninja-build glslang-tools g++-mingw-w64-x86-64 g++-mingw-w64-i686 libvulkan-dev zip
+          
+          echo "Vinculando las cabeceras de Vulkan del sistema en el árbol de Sarek..."
+          # Creamos la subcarpeta include requerida por el meson.build si no existe
+          mkdir -p include/vulkan
+          # Copiamos de forma física todas las estructuras legítimas de Khronos de la máquina virtual
+          cp -r /usr/include/vulkan/* include/vulkan/
+          echo "¡Estructura de Vulkan-Headers fijada!"
 
-      # 3. PARCHE FUSIÓN PIPPETOCRYPTO: Sincronizar Sarek con el Wrapper de texturas BCN por Compute Shaders
+      # 3. PARCHE FUSIÓN PIPPETOCRYPTO: Sincronizar Sarek con el Wrapper de texturas BCN
       - name: Inyectar Parche de Compatibilidad PippetoCrypto BCN Layer
         run: |
           echo "Habilitando el paso libre de texturas asíncronas para cooperar con el Wrapper..."
-          
-          # Forzamos la activación interna de los hilos de dyasync y compilación paralela
           find . -type f \( -name "*.cpp" -o -name "*.h" \) -exec sed -i 's/dxvk.enableDyasync = false/dxvk.enableDyasync = true/g' {} + || true
           find . -type f \( -name "*.cpp" -o -name "*.h" \) -exec sed -i 's/dxvk.numCompilerThreads = 0/dxvk.numCompilerThreads = 2/g' {} + || true
           
-          # Forzamos al mapeador de formatos BC a reportar soporte lógico positivo para que actúe el Wrapper de Pippeto
+          # Forzamos al mapeador de formatos BC a reportar soporte lógico positivo para el Wrapper
           find . -type f -name "*format*.cpp" -exec sed -i 's/textureCompressionBC = false/textureCompressionBC = true/g' {} + || true
           find . -type f -name "*device*.cpp" -exec sed -i 's/textureCompressionBC = false/textureCompressionBC = true/g' {} + || true
-          
-          echo "¡Sarek sincronizado con el Wrapper de PippetoCrypto!"
 
-      # 4. PARCHE GCC 13: Inyectar <cstdint> en las herramientas matemáticas específicas de Sarek
+      # 4. PARCHE GCC 13: Inyectar <cstdint> en los archivos matemáticos específicos de Sarek
       - name: Corregir Cabeceras de Tipos de Datos (cstdint Patch)
         run: |
           echo "Aplicando parches de tipos de datos de forma quirúrgica por archivo..."
@@ -55,10 +58,8 @@ jobs:
           sed -i '2i#include <cstdint>' src/util/util_vector.h || true
           sed -i '2i#include <cstdint>' src/util/config/config.h || true
           
-          # Limpieza e inyección en sha1.h usando separadores limpios
           sed -i 's/include <cstdint>/include <stdint.h>/g' src/util/sha1/sha1.h || true
           sed -i '2i#include <stdint.h>' src/util/sha1/sha1.h || true
-          echo "¡Tipos de datos condicionales y matemáticos aislados con éxito!"
 
       # 5. PARCHE COMPATIBILIDAD VULKAN 1.1: Rebajar los requisitos a nivel de código para tu Mali-G52 MP2
       - name: Aplicar Parche de Compatibilidad Vulkan 1.1 Estable
@@ -66,7 +67,6 @@ jobs:
           echo "Rebajando requisitos de API de Vulkan en el código..."
           find . -type f \( -name "*.cpp" -o -name "*.h" -o -name "*.txt" \) -exec sed -i 's/VK_API_VERSION_1_3/VK_API_VERSION_1_1/g' {} + || true
           find . -type f \( -name "*.cpp" -o -name "*.h" -o -name "*.txt" \) -exec sed -i 's/VK_API_VERSION_1_2/VK_API_VERSION_1_1/g' {} + || true
-          echo "¡Compatibilidad nativa con Vulkan 1.1 forzada!"
 
       # 6. COMPILACIÓN DE 64 BITS (x64) CON MINGW NATIVO
       - name: Configurar y Compilar DXVK Sarek x64
@@ -75,8 +75,8 @@ jobs:
             --cross-file build-win64.txt \
             --buildtype release \
             -Dstrip=true \
-            -Dc_args="-O3 -ffast-math" \
-            -Dcpp_args="-O3 -ffast-math"
+            -Dc_args="-O3 -ffast-math -I../include" \
+            -Dcpp_args="-O3 -ffast-math -I../include"
 
           ninja -C build_x64
 
@@ -87,8 +87,8 @@ jobs:
             --cross-file build-win32.txt \
             --buildtype release \
             -Dstrip=true \
-            -Dc_args="-O3 -ffast-math" \
-            -Dcpp_args="-O3 -ffast-math"
+            -Dc_args="-O3 -ffast-math -I../include" \
+            -Dcpp_args="-O3 -ffast-math -I../include"
 
           ninja -C build_x32
 
@@ -114,17 +114,14 @@ jobs:
           mkdir -p dxvk_package/x32
           mkdir -p dxvk_package/x64
           
-          # Inyectar el dxvk.conf preoptimizado de fábrica
           cp /tmp/config_build/dxvk.conf dxvk_package/x64/dxvk.conf || true
           cp /tmp/config_build/dxvk.conf dxvk_package/x32/dxvk.conf || true
           
-          # Copiar el set completo de 64 bits de Windows (Sarek genera DX8/9/10/11)
           cp build_x64/src/d3d11/d3d11.dll dxvk_package/x64/ 2>/dev/null || true
           cp build_x64/src/d3d10/d3d10.dll dxvk_package/x64/ 2>/dev/null || true
           cp build_x64/src/d3d9/d3d9.dll dxvk_package/x64/ 2>/dev/null || true
           cp build_x64/src/dxgi/dxgi.dll dxvk_package/x64/ 2>/dev/null || true
           
-          # Copiar el set completo de 32 bits de Windows (Sarek genera DX8/9/10/11)
           cp build_x32/src/d3d11/d3d11.dll dxvk_package/x32/ 2>/dev/null || true
           cp build_x32/src/d3d10/d3d10.dll dxvk_package/x32/ 2>/dev/null || true
           cp build_x32/src/d3d9/d3d9.dll dxvk_package/x32/ 2>/dev/null || true
@@ -142,7 +139,7 @@ jobs:
           gh release create "$TAG_NAME" \
             --repo "${{ github.repository }}" \
             --title "DXVK-Sarek 1.12.0 Full Async BCN - Unisoc T618 (Build #${{ github.run_number }})" \
-            --notes "Compilación maestra basada en DXVK-Sarek (Mali GPU Edition) con optimizaciones dyasync activas y compatibilidad total con el Wrapper de PippetoCrypto." \
+            --notes "Compilación maestra basada en DXVK-Sarek (Mali GPU Edition) con inyección forzada de Vulkan-Headers nativos de Ubuntu." \
             dxvk_t618_sarek_bcn.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
