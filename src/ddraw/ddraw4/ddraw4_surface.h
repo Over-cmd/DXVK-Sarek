@@ -117,8 +117,6 @@ namespace dxvk {
 
     HRESULT STDMETHODCALLTYPE ChangeUniquenessValue();
 
-    IDirectDrawSurface4* GetShadowOrProxied();
-
     HRESULT InitializeD3D9RenderTarget();
 
     HRESULT InitializeD3D9DepthStencil();
@@ -133,6 +131,15 @@ namespace dxvk {
 
     DDraw4Surface* GetShadowSurface() const {
       return m_shadowSurf.ptr();
+    }
+
+    IDirectDrawSurface4* GetShadowOrProxied() {
+      d3d9::IDirect3DDevice9* d3d9Device = m_commonSurf->GetRefreshedD3D9Device();
+
+      if (unlikely(m_shadowSurf != nullptr && d3d9Device != nullptr))
+        return m_shadowSurf->GetProxied();
+
+      return m_proxy.ptr();
     }
 
     DDrawCommonSurface* GetCommonSurface() const {
@@ -168,31 +175,25 @@ namespace dxvk {
       return m_depthStencil.ptr();
     }
 
-    void ClearAttachedDepthStencil() {
-      m_depthStencil = nullptr;
+    void SetParentSurface(DDraw4Surface* surface) {
+      m_parentSurf = surface;
+
+      if (m_parentSurf != nullptr)
+        m_commonSurf->SetIsAttached(true);
+      else
+        m_commonSurf->SetIsAttached(false);
     }
 
     DDraw4Surface* GetParentSurface() const {
       return m_parentSurf;
     }
 
-    void SetParentSurface(DDraw4Surface* surface) {
-      m_parentSurf = surface;
-      m_commonSurf->SetIsAttached(true);
-    }
-
-    void ClearParentSurface() {
-      m_parentSurf = nullptr;
-      m_commonSurf->SetIsAttached(false);
-    }
-
   private:
-
-    inline void UpdateMipMapCount();
 
     inline HRESULT UploadSurfaceData();
 
-    bool                    m_isChildObject = true;
+    bool                    m_isChildObject = false;
+    std::atomic<bool>       m_readOnlyLock  = false;
 
     Com<DDrawCommonSurface> m_commonSurf;
     DDrawCommonInterface*   m_commonIntf    = nullptr;
@@ -201,7 +202,7 @@ namespace dxvk {
 
     Com<D3D3Texture, false> m_texture3;
     // D3D5Texture (aka IDirect3DTexture2) is shared between D3D5 and D3D6
-    Com<D3D5Texture, false> m_texture6;
+    Com<D3D5Texture, false> m_texture5;
 
     DDraw4Surface*          m_nextFlippable = nullptr;
 
@@ -218,9 +219,6 @@ namespace dxvk {
     // They are implemented with linked list, so for example only one mip level
     // will be held in a parent texture, and the next mip level will be held in the previous mip.
     std::unordered_map<IDirectDrawSurface4*, Com<DDraw4Surface, false>> m_attachedSurfaces;
-
-    uint32_t                m_surfCount     = 0;
-    static std::atomic<uint32_t> s_surfCount;
 
   };
 

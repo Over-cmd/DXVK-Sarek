@@ -1,5 +1,7 @@
 #pragma once
 
+#include <memory>
+
 #include "d3d9_device_child.h"
 #include "d3d9_device.h"
 #include "d3d9_format.h"
@@ -10,11 +12,15 @@
 
 #include "../util/sync/sync_signal.h"
 
+#include "../wsi/wsi_window.h"
+#include "../wsi/wsi_monitor.h"
+
 #include <vector>
 
 namespace dxvk {
 
   class D3D9Surface;
+  class FramePacer;
 
   using D3D9SwapChainExBase = D3D9DeviceChild<IDirect3DSwapChain9Ex>;
   class D3D9SwapChainEx final : public D3D9SwapChainExBase {
@@ -87,13 +93,6 @@ namespace dxvk {
       Gamma = 1,
     };
 
-
-    struct WindowState {
-      LONG style   = 0;
-      LONG exstyle = 0;
-      RECT rect    = { 0, 0, 0, 0 };
-    };
-
     D3DPRESENT_PARAMETERS     m_presentParams;
     D3DGAMMARAMP              m_ramp;
 
@@ -119,6 +118,8 @@ namespace dxvk {
     uint32_t                  m_frameLatencyCap   = 0;
     Rc<sync::Fence>           m_frameLatencySignal;
 
+    std::unique_ptr<FramePacer> m_framePacer;
+
     bool                      m_dirty    = true;
     bool                      m_vsync    = true;
 
@@ -128,7 +129,7 @@ namespace dxvk {
     HWND                      m_window   = nullptr;
     HMONITOR                  m_monitor  = nullptr;
 
-    WindowState               m_windowState;
+    wsi::DxvkWindowState      m_windowState;
 
     double                    m_displayRefreshRate = 0.0;
     double                    m_targetFrameRate    = 0.0;

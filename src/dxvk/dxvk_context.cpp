@@ -42,6 +42,11 @@ namespace dxvk {
     m_vbTracked.clear();
     m_rcTracked.clear();
 
+    // A fresh command buffer has nothing bound, so the handles tracked
+    // for redundant-bind elimination no longer describe what is recorded.
+    m_gpActivePipeline = VK_NULL_HANDLE;
+    m_cpActivePipeline = VK_NULL_HANDLE;
+
     // The current state of the internal command buffer is
     // undefined, so we have to bind and set up everything
     // before any draw or dispatch command is recorded.
@@ -318,6 +323,18 @@ namespace dxvk {
         image->info().access);
 
       image->setLayout(layout);
+
+      for (uint32_t i = 0; i < MaxNumRenderTargets; i++) {
+        const DxvkAttachment& rt = m_state.om.renderTargets.color[i];
+        if (rt.view != nullptr && rt.view->image() == image) {
+          m_rtLayouts.color[i] = layout;
+        }
+      }
+
+      const DxvkAttachment& ds = m_state.om.renderTargets.depth;
+      if (ds.view != nullptr && ds.view->image() == image) {
+        m_rtLayouts.depth = layout;
+      }
 
       m_cmd->trackResource<DxvkAccess::Write>(image);
     }
@@ -694,7 +711,8 @@ namespace dxvk {
     if (m_device->perfHints().preferFbDepthStencilCopy) {
       useFb |= (dstSubresource.aspectMask == (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT))
             && (dstImage->info().usage & VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT)
-            && (srcImage->info().usage & VK_IMAGE_USAGE_SAMPLED_BIT);
+            && (srcImage->info().usage & VK_IMAGE_USAGE_SAMPLED_BIT)
+            && (srcImage != dstImage);
     }
 
     if (!useFb) {
@@ -1546,7 +1564,8 @@ namespace dxvk {
           VkImageLayout             initialLayout) {
     if (initialLayout == VK_IMAGE_LAYOUT_PREINITIALIZED) {
       m_initBarriers.accessImage(image, subresources,
-        initialLayout, 0, 0,
+        initialLayout,
+        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0,
         image->info().layout,
         image->info().stages,
         image->info().access);
@@ -1555,11 +1574,12 @@ namespace dxvk {
     } else {
       VkImageLayout clearLayout = image->pickLayout(VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 
-      m_execAcquires.accessImage(image, subresources,
-        initialLayout, 0, 0, clearLayout,
+      m_initBarriers.accessImage(image, subresources,
+        initialLayout,
+        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0,
+        clearLayout,
         VK_PIPELINE_STAGE_TRANSFER_BIT,
         VK_ACCESS_TRANSFER_WRITE_BIT);
-      m_execAcquires.recordCommands(m_cmd);
 
       auto formatInfo = image->formatInfo();
 
@@ -1939,7 +1959,7 @@ namespace dxvk {
 
     if (clearAspects & VK_IMAGE_ASPECT_STENCIL_BIT)
       depthOp.loadOpS = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    else if (discardAspects & VK_IMAGE_ASPECT_DEPTH_BIT)
+    else if (discardAspects & VK_IMAGE_ASPECT_STENCIL_BIT)
       depthOp.loadOpS = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
 
     if (attachmentIndex >= 0 && !m_state.om.framebufferInfo.isWritable(attachmentIndex, clearAspects | discardAspects)) {
@@ -2246,7 +2266,8 @@ namespace dxvk {
     // Discard previous subresource contents
     barriers->accessImage(image,
       vk::makeSubresourceRange(subresources),
-      VK_IMAGE_LAYOUT_UNDEFINED, 0, 0,
+      VK_IMAGE_LAYOUT_UNDEFINED,
+      VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0,
       image->pickLayout(VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL),
       VK_PIPELINE_STAGE_TRANSFER_BIT,
       VK_ACCESS_TRANSFER_WRITE_BIT);
@@ -3864,6 +3885,18 @@ namespace dxvk {
 
 
   void DxvkContext::spillRenderPass(bool suspend) {
+    // Meta operations bind their own pipelines straight onto the command
+    // list without going through updateGraphicsPipelineState, which would
+    // leave the tracked handles naming a pipeline that is no longer bound.
+    // All of them spill first, so clearing here covers every one of them
+    // and gives a simple invariant: after a spill, nothing is known to be
+    // bound. This has to happen before the branch below, since a spill
+    // with no render pass bound does not reach unbindGraphicsPipeline.
+    // Draws inside a render pass, where the elimination pays off, are
+    // untouched.
+    m_gpActivePipeline = VK_NULL_HANDLE;
+    m_cpActivePipeline = VK_NULL_HANDLE;
+
     if (m_flags.test(DxvkContextFlag::GpRenderPassBound)) {
       m_flags.clr(DxvkContextFlag::GpRenderPassBound);
 
@@ -4056,14 +4089,25 @@ namespace dxvk {
 
 
   bool DxvkContext::updateComputePipelineState() {
-    m_cpActivePipeline = m_state.cp.pipeline->getPipelineHandle(m_state.cp.state);
+    VkPipeline pipeline = m_state.cp.pipeline->getPipelineHandle(m_state.cp.state);
 
-    if (unlikely(!m_cpActivePipeline))
+    if (unlikely(!pipeline)) {
+      m_cpActivePipeline = VK_NULL_HANDLE;
       return false;
+    }
 
-    m_cmd->cmdBindPipeline(
-      VK_PIPELINE_BIND_POINT_COMPUTE,
-      m_cpActivePipeline);
+    // Pipeline state gets dirtied by changes that resolve to the same
+    // pipeline object, such as a binding mask update or a spec constant
+    // that lands on the value it already had. Re-binding a handle that is
+    // already bound does nothing on the GPU but still costs a command and
+    // driver-side work, which is worth avoiding on a weak CPU.
+    if (pipeline != m_cpActivePipeline) {
+      m_cpActivePipeline = pipeline;
+
+      m_cmd->cmdBindPipeline(
+        VK_PIPELINE_BIND_POINT_COMPUTE,
+        m_cpActivePipeline);
+    }
 
     m_flags.clr(DxvkContextFlag::CpDirtyPipelineState);
     return true;
@@ -4150,15 +4194,25 @@ namespace dxvk {
       : DxvkContextFlag::GpDirtyStencilRef);
 
     // Retrieve and bind actual Vulkan pipeline handle
-    m_gpActivePipeline = m_state.gp.pipeline->getPipelineHandle(
+    VkPipeline pipeline = m_state.gp.pipeline->getPipelineHandle(
       m_state.gp.state, m_state.om.framebufferInfo.renderPass());
 
-    if (unlikely(!m_gpActivePipeline))
+    if (unlikely(!pipeline)) {
+      m_gpActivePipeline = VK_NULL_HANDLE;
       return false;
+    }
 
-    m_cmd->cmdBindPipeline(
-      VK_PIPELINE_BIND_POINT_GRAPHICS,
-      m_gpActivePipeline);
+    // See updateComputePipelineState. The tracked handle is cleared in
+    // beginRecording, in spillRenderPass and in unbindGraphicsPipeline,
+    // which between them cover every point at which something else may
+    // have bound a pipeline.
+    if (pipeline != m_gpActivePipeline) {
+      m_gpActivePipeline = pipeline;
+
+      m_cmd->cmdBindPipeline(
+        VK_PIPELINE_BIND_POINT_GRAPHICS,
+        m_gpActivePipeline);
+    }
 
     m_flags.clr(DxvkContextFlag::GpDirtyPipelineState);
     return true;

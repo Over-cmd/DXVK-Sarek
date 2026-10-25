@@ -21,8 +21,6 @@
 
 namespace dxvk {
 
-  std::atomic<uint32_t> D3D6Viewport::s_viewportCount = 0;
-
   D3D6Viewport::D3D6Viewport(
         D3DCommonViewport* commonViewport,
         D3D6Interface* pParent)
@@ -36,10 +34,6 @@ namespace dxvk {
       m_commonViewport->SetOrigin(this);
 
     m_commonViewport->SetD3D6Viewport(this);
-
-    m_viewportCount = ++s_viewportCount;
-
-    Logger::debug(str::format("D3D6Viewport: Created a new viewport nr. [[3-", m_viewportCount, "]]"));
   }
 
   D3D6Viewport::~D3D6Viewport() {
@@ -54,8 +48,6 @@ namespace dxvk {
       m_commonViewport->SetOrigin(nullptr);
 
     m_commonViewport->SetD3D6Viewport(nullptr);
-
-    Logger::debug(str::format("D3D6Viewport: Viewport nr. [[3-", m_viewportCount, "]] bites the dust"));
   }
 
   // Interlocked refcount with the origin viewport
@@ -79,8 +71,6 @@ namespace dxvk {
   }
 
   HRESULT STDMETHODCALLTYPE D3D6Viewport::QueryInterface(REFIID riid, void** ppvObject) {
-    Logger::debug(">>> D3D6Viewport::QueryInterface");
-
     if (unlikely(ppvObject == nullptr))
       return E_POINTER;
 
@@ -88,12 +78,8 @@ namespace dxvk {
 
     // Some games query for legacy viewport interfaces
     if (unlikely(riid == __uuidof(IDirect3DViewport))) {
-      if (m_commonViewport->GetD3D3Viewport() != nullptr) {
-        Logger::debug("D3D6Viewport::QueryInterface: Query for existing IDirect3DViewport");
+      if (m_commonViewport->GetD3D3Viewport() != nullptr)
         return m_commonViewport->GetD3D3Viewport()->QueryInterface(riid, ppvObject);
-      }
-
-      Logger::debug("D3D6Viewport::QueryInterface: Query for IDirect3DViewport");
 
       m_viewport3 = new D3D3Viewport(m_commonViewport.ptr(), nullptr);
       *ppvObject = m_viewport3.ref();
@@ -101,12 +87,8 @@ namespace dxvk {
       return S_OK;
     }
     if (unlikely(riid == __uuidof(IDirect3DViewport2))) {
-      if (m_commonViewport->GetD3D5Viewport() != nullptr) {
-        Logger::debug("D3D6Viewport::QueryInterface: Query for existing IDirect3DViewport2");
+      if (m_commonViewport->GetD3D5Viewport() != nullptr)
         return m_commonViewport->GetD3D5Viewport()->QueryInterface(riid, ppvObject);
-      }
-
-      Logger::debug("D3D6Viewport::QueryInterface: Query for IDirect3DViewport2");
 
       m_viewport5 = new D3D5Viewport(m_commonViewport.ptr(), nullptr);
       *ppvObject = m_viewport5.ref();
@@ -127,13 +109,10 @@ namespace dxvk {
 
   // Docs state: "The IDirect3DViewport3::Initialize method is not implemented."
   HRESULT STDMETHODCALLTYPE D3D6Viewport::Initialize(IDirect3D *d3d) {
-    Logger::debug(">>> D3D6Viewport::Initialize");
     return DDERR_ALREADYINITIALIZED;
   }
 
   HRESULT STDMETHODCALLTYPE D3D6Viewport::GetViewport(D3DVIEWPORT *data) {
-    Logger::debug(">>> D3D6Viewport::GetViewport");
-
     if (unlikely(data == nullptr))
       return DDERR_INVALIDPARAMS;
 
@@ -163,8 +142,6 @@ namespace dxvk {
   }
 
   HRESULT STDMETHODCALLTYPE D3D6Viewport::SetViewport(D3DVIEWPORT *data) {
-    Logger::debug(">>> D3D6Viewport::SetViewport");
-
     if (unlikely(data == nullptr))
       return DDERR_INVALIDPARAMS;
 
@@ -174,8 +151,10 @@ namespace dxvk {
     if (unlikely(!m_commonViewport->HasDevice()))
       return D3DERR_VIEWPORTHASNODEVICE;
 
+    D3DCommonDevice* commonD3DDevice = m_commonViewport->GetCommonD3DDevice();
+
     // Use the full surface rect, since it is surface version agnostic
-    const RECT* surfRect = m_commonViewport->GetCommonRenderTarget()->GetFullSurfaceRect();
+    const RECT* surfRect = commonD3DDevice->GetCommonRenderTarget()->GetFullSurfaceRect();
     // D3D6 will fail when setting a viewport that's outside of the
     // current render target, though that works in D3D9
     HRESULT hr = ValidateViewportRT(data->dwX, data->dwY, data->dwWidth, data->dwHeight,
@@ -204,39 +183,31 @@ namespace dxvk {
     legacyClip->z = 0.0f;
 
     m_commonViewport->MarkViewportAsSet();
-
     if (m_commonViewport->IsCurrentViewport())
-      ApplyViewport();
+      m_commonViewport->ApplyViewport();
 
     return D3D_OK;
   }
 
   HRESULT STDMETHODCALLTYPE D3D6Viewport::TransformVertices(DWORD vertex_count, D3DTRANSFORMDATA *data, DWORD flags, DWORD *offscreen) {
-    Logger::debug(">>> D3D6Viewport::TransformVertices");
-
-    if (unlikely(!m_commonViewport->HasDevice())) {
-      Logger::warn("D3D6Viewport::TransformVertices: Viewport isn't attached to a device");
+    if (unlikely(!m_commonViewport->HasDevice()))
       return D3DERR_VIEWPORTHASNODEVICE;
-    }
 
     d3d9::IDirect3DDevice9* d3d9Device = m_commonViewport->GetCommonD3DDevice()->GetD3D9Device();
 
     // Temporarily activate this viewport, if not already active
     d3d9::D3DVIEWPORT9 currentViewport9;
-    if (!m_commonViewport->IsCurrentViewport()) {
-      D3D6Viewport* currentViewport = m_commonViewport->GetCurrentD3D6Viewport();
-      if (currentViewport != nullptr) {
-        currentViewport9 = *currentViewport->GetCommonViewport()->GetD3D9Viewport();
-      } else {
-        d3d9Device->GetViewport(&currentViewport9);
-      }
+    const bool isCurrentViewport = m_commonViewport->IsCurrentViewport();
+
+    if (!isCurrentViewport) {
+      d3d9Device->GetViewport(&currentViewport9);
       d3d9Device->SetViewport(m_commonViewport->GetD3D9Viewport());
     }
 
     HRESULT hr = m_commonViewport->TransformVertices(vertex_count, data, flags, offscreen);
 
     // Restore the previously active viewport
-    if (!m_commonViewport->IsCurrentViewport()) {
+    if (!isCurrentViewport) {
       d3d9Device->SetViewport(&currentViewport9);
     }
 
@@ -245,13 +216,10 @@ namespace dxvk {
 
   // Docs state: "The IDirect3DViewport3::LightElements method is not currently implemented."
   HRESULT STDMETHODCALLTYPE D3D6Viewport::LightElements(DWORD element_count, D3DLIGHTDATA *data) {
-    Logger::warn(">>> D3D6Viewport::LightElements");
     return DDERR_UNSUPPORTED;
   }
 
   HRESULT STDMETHODCALLTYPE D3D6Viewport::SetBackground(D3DMATERIALHANDLE hMat) {
-    Logger::debug(">>> D3D6Viewport::SetBackground");
-
     if (unlikely(m_commonViewport->GetMaterialHandle() == hMat))
       return D3D_OK;
 
@@ -268,8 +236,6 @@ namespace dxvk {
   }
 
   HRESULT STDMETHODCALLTYPE D3D6Viewport::GetBackground(D3DMATERIALHANDLE *material, BOOL *valid) {
-    Logger::debug(">>> D3D6Viewport::GetBackground");
-
     if (unlikely(material == nullptr || valid == nullptr))
       return DDERR_INVALIDPARAMS;
 
@@ -280,22 +246,24 @@ namespace dxvk {
   }
 
   HRESULT STDMETHODCALLTYPE D3D6Viewport::SetBackgroundDepth(IDirectDrawSurface *surface) {
-    Logger::debug(">>> D3D6Viewport::SetBackgroundDepth");
-
-    if (unlikely(!DDrawCommonInterface::IsWrappedSurface(surface))) {
+    if (unlikely(surface != nullptr
+             && !DDrawCommonInterface::IsWrappedSurface(surface))) {
       Logger::err("D3D6Viewport::SetBackgroundDepth: Received an unwrapped surface");
       return DDERR_UNSUPPORTED;
     }
 
-    m_backgroundDepth = reinterpret_cast<DDrawSurface*>(surface);
-    m_isBackgroundDepthSet = true;
+    if (unlikely(surface == nullptr)) {
+      m_backgroundDepth = nullptr;
+      m_isBackgroundDepthSet = false;
+    } else {
+      m_backgroundDepth = reinterpret_cast<DDrawSurface*>(surface);
+      m_isBackgroundDepthSet = true;
+    }
 
     return D3D_OK;
   }
 
   HRESULT STDMETHODCALLTYPE D3D6Viewport::GetBackgroundDepth(IDirectDrawSurface **surface, BOOL *valid) {
-    Logger::debug(">>> D3D6Viewport::GetBackgroundDepth");
-
     if (unlikely(surface == nullptr || valid == nullptr))
       return DDERR_INVALIDPARAMS;
 
@@ -308,26 +276,26 @@ namespace dxvk {
   }
 
   HRESULT STDMETHODCALLTYPE D3D6Viewport::Clear(DWORD count, D3DRECT *rects, DWORD flags) {
-    Logger::debug(">>> D3D6Viewport::Clear");
+    // Early D3D viewport fast skip
+    if (unlikely(!count || !rects))
+      return D3D_OK;
 
     if (unlikely(!m_commonViewport->HasDevice()))
       return D3DERR_VIEWPORTHASNODEVICE;
-
-    // Early D3D viewport fast skip
-    if (unlikely(!count || (count && rects == nullptr)))
-      return D3D_OK;
 
     const bool clearRenderTarget = flags & D3DCLEAR_TARGET;
     const bool clearDepthStencil = flags & D3DCLEAR_ZBUFFER;
     DDrawCommonSurface* rt = nullptr;
     DDrawCommonSurface* ds = nullptr;
 
+    D3DCommonDevice* commonD3DDevice = m_commonViewport->GetCommonD3DDevice();
+
     if (clearRenderTarget) {
-      rt = m_commonViewport->GetCommonRenderTarget();
+      rt = commonD3DDevice->GetCommonRenderTarget();
       if (likely(rt != nullptr)) {
         // If this isn't a full surface clear, we need to first upload the DDraw surface
         if (unlikely(count > 1 || !rt->IsFullSurfaceLock(reinterpret_cast<RECT*>(rects), nullptr))) {
-          Logger::debug("D3D6Viewport::Clear: Partial render target clear");
+          //Logger::debug("D3D6Viewport::Clear: Partial render target clear");
           // Use a common surface helper, because we want to handle all
           // possible surface interfaces that may be alive at this time
           rt->InitializeOrUploadD3D9();
@@ -335,11 +303,11 @@ namespace dxvk {
       }
     }
     if (clearDepthStencil) {
-      ds = m_commonViewport->GetCommonDepthStencil();
+      ds = commonD3DDevice->GetCommonDepthStencil();
       if (likely(ds != nullptr)) {
         // If this isn't a full surface clear, we need to first upload the DDraw surface
         if (unlikely(count > 1 || !ds->IsFullSurfaceLock(reinterpret_cast<RECT*>(rects), nullptr))) {
-          Logger::debug("D3D6Viewport::Clear: Partial depth stencil clear");
+          //Logger::debug("D3D6Viewport::Clear: Partial depth stencil clear");
           // Use a common surface helper, because we want to handle all
           // possible surface interfaces that may be alive at this time
           ds->InitializeOrUploadD3D9();
@@ -347,17 +315,14 @@ namespace dxvk {
       }
     }
 
-    d3d9::IDirect3DDevice9* d3d9Device = m_commonViewport->GetCommonD3DDevice()->GetD3D9Device();
+    d3d9::IDirect3DDevice9* d3d9Device = commonD3DDevice->GetD3D9Device();
 
     // Temporarily activate this viewport in order to clear it
     d3d9::D3DVIEWPORT9 currentViewport9;
-    if (!m_commonViewport->IsCurrentViewport()) {
-      D3D6Viewport* currentViewport = m_commonViewport->GetCurrentD3D6Viewport();
-      if (currentViewport != nullptr) {
-        currentViewport9 = *currentViewport->GetCommonViewport()->GetD3D9Viewport();
-      } else {
-        d3d9Device->GetViewport(&currentViewport9);
-      }
+    const bool isCurrentViewport = m_commonViewport->IsCurrentViewport();
+
+    if (!isCurrentViewport) {
+      d3d9Device->GetViewport(&currentViewport9);
       d3d9Device->SetViewport(m_commonViewport->GetD3D9Viewport());
     }
 
@@ -371,14 +336,14 @@ namespace dxvk {
     HRESULT hr = d3d9Device->Clear(count, rects, flags, clearColor, 1.0f, 0u);
 
     // Restore the previously active viewport
-    if (!m_commonViewport->IsCurrentViewport()) {
+    if (!isCurrentViewport) {
       d3d9Device->SetViewport(&currentViewport9);
     }
 
-    // Clear() will only ever silently fail
+    // Can fail in D3D9 only in case of a missing depth stencil surface
     if (unlikely(FAILED(hr))) {
-      Logger::debug("D3D6Viewport::Clear: Failed D3D9 Clear call");
-      return D3D_OK;
+      // Fix up expected return codes
+      return D3DERR_ZBUFFER_NOTPRESENT;
     }
 
     if (clearRenderTarget && rt != nullptr)
@@ -386,14 +351,12 @@ namespace dxvk {
     if (clearDepthStencil && ds != nullptr)
       ds->UnDirtyDDrawSurface();
 
-    m_commonViewport->UpdateSurfaceDirtyTracking(clearRenderTarget, clearDepthStencil, false);
+    commonD3DDevice->UpdateSurfaceDirtyTracking(clearRenderTarget, clearDepthStencil, false);
 
     return D3D_OK;
   }
 
   HRESULT STDMETHODCALLTYPE D3D6Viewport::AddLight(IDirect3DLight *light) {
-    Logger::debug(">>> D3D6Viewport::AddLight");
-
     if (unlikely(light == nullptr))
       return DDERR_INVALIDPARAMS;
 
@@ -409,14 +372,12 @@ namespace dxvk {
     d3dLight->SetViewport6(this);
 
     if (m_commonViewport->HasDevice() && m_commonViewport->IsCurrentViewport())
-      ApplyAndActivateLight(d3dLight->GetIndex(), d3dLight);
+      m_commonViewport->ApplyAndActivateLight(d3dLight);
 
     return D3D_OK;
   }
 
   HRESULT STDMETHODCALLTYPE D3D6Viewport::DeleteLight(IDirect3DLight *light) {
-    Logger::debug(">>> D3D6Viewport::DeleteLight");
-
     if (unlikely(light == nullptr))
       return DDERR_INVALIDPARAMS;
 
@@ -429,14 +390,11 @@ namespace dxvk {
 
     auto it = std::find(lights.begin(), lights.end(), d3dLight);
     if (likely(it != lights.end())) {
-      const DWORD lightIndex = d3dLight->GetIndex();
-      if (m_commonViewport->HasDevice() && m_commonViewport->IsCurrentViewport() && d3dLight->IsActive()) {
-        Logger::debug(str::format("D3D6Viewport: Disabling light nr. ", lightIndex));
-        d3d9::IDirect3DDevice9* d3d9Device = m_commonViewport->GetCommonD3DDevice()->GetD3D9Device();
-        d3d9Device->LightEnable(lightIndex, FALSE);
-      }
-      lights.erase(it);
+      // Ensure the light is deactivated before deleting it
+      if (m_commonViewport->HasDevice() && m_commonViewport->IsCurrentViewport() && d3dLight->IsActive())
+        m_commonViewport->DeactivateLight(d3dLight);
       d3dLight->SetViewport6(nullptr);
+      lights.erase(it);
     } else {
       Logger::warn("D3D6Viewport::DeleteLight: Light not found");
       return DDERR_INVALIDPARAMS;
@@ -446,8 +404,6 @@ namespace dxvk {
   }
 
   HRESULT STDMETHODCALLTYPE D3D6Viewport::NextLight(IDirect3DLight *lpDirect3DLight, IDirect3DLight **lplpDirect3DLight, DWORD flags) {
-    Logger::debug(">>> D3D6Viewport::NextLight");
-
     if (unlikely(lplpDirect3DLight == nullptr))
       return DDERR_INVALIDPARAMS;
 
@@ -473,8 +429,6 @@ namespace dxvk {
   }
 
   HRESULT STDMETHODCALLTYPE D3D6Viewport::GetViewport2(D3DVIEWPORT2 *data) {
-    Logger::debug(">>> D3D6Viewport::GetViewport2");
-
     if (unlikely(data == nullptr))
       return DDERR_INVALIDPARAMS;
 
@@ -504,8 +458,6 @@ namespace dxvk {
   }
 
   HRESULT STDMETHODCALLTYPE D3D6Viewport::SetViewport2(D3DVIEWPORT2 *data) {
-    Logger::debug(">>> D3D6Viewport::SetViewport2");
-
     if (unlikely(data == nullptr))
       return DDERR_INVALIDPARAMS;
 
@@ -515,8 +467,10 @@ namespace dxvk {
     if (unlikely(!m_commonViewport->HasDevice()))
       return D3DERR_VIEWPORTHASNODEVICE;
 
+    D3DCommonDevice* commonD3DDevice = m_commonViewport->GetCommonD3DDevice();
+
     // Use the full surface rect, since it is surface version agnostic
-    const RECT* surfRect = m_commonViewport->GetCommonRenderTarget()->GetFullSurfaceRect();
+    const RECT* surfRect = commonD3DDevice->GetCommonRenderTarget()->GetFullSurfaceRect();
     // D3D6 will fail when setting a viewport that's outside of the
     // current render target, though that works in D3D9
     HRESULT hr = ValidateViewportRT(data->dwX, data->dwY, data->dwWidth, data->dwHeight,
@@ -543,30 +497,31 @@ namespace dxvk {
     legacyClip->z = -data->dvMinZ / (data->dvMaxZ - data->dvMinZ);
 
     m_commonViewport->MarkViewportAsSet();
-
     if (m_commonViewport->IsCurrentViewport())
-      ApplyViewport();
+      m_commonViewport->ApplyViewport();
 
     return D3D_OK;
   }
 
   HRESULT STDMETHODCALLTYPE D3D6Viewport::SetBackgroundDepth2(IDirectDrawSurface4 *surface) {
-    Logger::debug(">>> D3D6Viewport::SetBackgroundDepth2");
-
-    if (unlikely(!DDrawCommonInterface::IsWrappedSurface(surface))) {
+    if (unlikely(surface != nullptr
+             && !DDrawCommonInterface::IsWrappedSurface(surface))) {
       Logger::err("D3D6Viewport::SetBackgroundDepth2: Received an unwrapped surface");
       return DDERR_UNSUPPORTED;
     }
 
-    m_backgroundDepth4 = reinterpret_cast<DDraw4Surface*>(surface);
-    m_isBackgroundDepth4Set = true;
+    if (unlikely(surface == nullptr)) {
+      m_backgroundDepth4 = nullptr;
+      m_isBackgroundDepth4Set = false;
+    } else {
+      m_backgroundDepth4 = reinterpret_cast<DDraw4Surface*>(surface);
+      m_isBackgroundDepth4Set = true;
+    }
 
     return D3D_OK;
   }
 
   HRESULT STDMETHODCALLTYPE D3D6Viewport::GetBackgroundDepth2(IDirectDrawSurface4 **surface, BOOL *valid) {
-    Logger::debug(">>> D3D6Viewport::GetBackgroundDepth2");
-
     if (unlikely(surface == nullptr || valid == nullptr))
       return DDERR_INVALIDPARAMS;
 
@@ -579,26 +534,26 @@ namespace dxvk {
   }
 
   HRESULT STDMETHODCALLTYPE D3D6Viewport::Clear2(DWORD count, D3DRECT *rects, DWORD flags, DWORD color, D3DVALUE z, DWORD stencil) {
-    Logger::debug(">>> D3D6Viewport::Clear2");
+    // Early D3D viewport fast skip
+    if (unlikely(!count || !rects))
+      return D3D_OK;
 
     if (unlikely(!m_commonViewport->HasDevice()))
       return D3DERR_VIEWPORTHASNODEVICE;
-
-    // Early D3D viewport fast skip
-    if (unlikely(!count || (count && rects == nullptr)))
-      return D3D_OK;
 
     const bool clearRenderTarget = flags & D3DCLEAR_TARGET;
     const bool clearDepthStencil = (flags & D3DCLEAR_ZBUFFER) || (flags & D3DCLEAR_STENCIL);
     DDrawCommonSurface* rt = nullptr;
     DDrawCommonSurface* ds = nullptr;
 
+    D3DCommonDevice* commonD3DDevice = m_commonViewport->GetCommonD3DDevice();
+
     if (clearRenderTarget) {
-      rt = m_commonViewport->GetCommonRenderTarget();
+      rt = commonD3DDevice->GetCommonRenderTarget();
       if (likely(rt != nullptr)) {
         // If this isn't a full surface clear, we need to first upload the DDraw surface
         if (unlikely(count > 1 || !rt->IsFullSurfaceLock(reinterpret_cast<RECT*>(rects), nullptr))) {
-          Logger::debug("D3D6Viewport::Clear2: Partial render target clear");
+          //Logger::debug("D3D6Viewport::Clear2: Partial render target clear");
           // Use a common surface helper, because we want to handle all
           // possible surface interfaces that may be alive at this time
           rt->InitializeOrUploadD3D9();
@@ -606,11 +561,11 @@ namespace dxvk {
       }
     }
     if (clearDepthStencil) {
-      ds = m_commonViewport->GetCommonDepthStencil();
+      ds = commonD3DDevice->GetCommonDepthStencil();
       if (likely(ds != nullptr)) {
         // If this isn't a full surface clear, we need to first upload the DDraw surface
         if (unlikely(count > 1 || !ds->IsFullSurfaceLock(reinterpret_cast<RECT*>(rects), nullptr))) {
-          Logger::debug("D3D6Viewport::Clear2: Partial depth stencil clear");
+          //Logger::debug("D3D6Viewport::Clear2: Partial depth stencil clear");
           // Use a common surface helper, because we want to handle all
           // possible surface interfaces that may be alive at this time
           ds->InitializeOrUploadD3D9();
@@ -618,32 +573,32 @@ namespace dxvk {
       }
     }
 
-    d3d9::IDirect3DDevice9* d3d9Device = m_commonViewport->GetCommonD3DDevice()->GetD3D9Device();
+    d3d9::IDirect3DDevice9* d3d9Device = commonD3DDevice->GetD3D9Device();
 
     // Temporarily activate this viewport in order to clear it
     d3d9::D3DVIEWPORT9 currentViewport9;
-    if (!m_commonViewport->IsCurrentViewport()) {
-      D3D6Viewport* currentViewport = m_commonViewport->GetCurrentD3D6Viewport();
-      if (currentViewport != nullptr) {
-        currentViewport9 = *currentViewport->GetCommonViewport()->GetD3D9Viewport();
-      }  else {
-        d3d9Device->GetViewport(&currentViewport9);
-      }
+    const bool isCurrentViewport = m_commonViewport->IsCurrentViewport();
+
+    if (!isCurrentViewport) {
+      d3d9Device->GetViewport(&currentViewport9);
       d3d9Device->SetViewport(m_commonViewport->GetD3D9Viewport());
     }
 
     HRESULT hr = d3d9Device->Clear(count, rects, flags, color, z, stencil);
 
     // Restore the previously active viewport
-    if (!m_commonViewport->IsCurrentViewport()) {
+    if (!isCurrentViewport) {
       d3d9Device->SetViewport(&currentViewport9);
     }
 
-    // Unlike Clear(), Clear2() is supposed to error out on
-    // z/stencil clears and no z/stencil attachments
+    // Can fail in D3D9 only in case of a missing depth stencil surface
     if (unlikely(FAILED(hr))) {
-      Logger::debug("D3D6Viewport::Clear2: Failed D3D9 Clear call");
-      return hr;
+      // Fix up expected return codes
+      if (flags & D3DCLEAR_ZBUFFER) {
+        return D3DERR_ZBUFFER_NOTPRESENT;
+      } else {
+        return D3DERR_STENCILBUFFER_NOTPRESENT;
+      }
     }
 
     if (clearRenderTarget && rt != nullptr)
@@ -651,83 +606,7 @@ namespace dxvk {
     if (clearDepthStencil && ds != nullptr)
       ds->UnDirtyDDrawSurface();
 
-    m_commonViewport->UpdateSurfaceDirtyTracking(clearRenderTarget, clearDepthStencil, false);
-
-    return D3D_OK;
-  }
-
-  HRESULT D3D6Viewport::ApplyViewport() {
-    if (!m_commonViewport->IsViewportSet())
-      return D3D_OK;
-
-    Logger::debug("D3D6Viewport: Applying viewport to D3D9");
-
-    d3d9::IDirect3DDevice9* d3d9Device = m_commonViewport->GetCommonD3DDevice()->GetD3D9Device();
-
-    HRESULT hr = d3d9Device->SetViewport(m_commonViewport->GetD3D9Viewport());
-    if (unlikely(FAILED(hr))) {
-      Logger::err("D3D6Viewport: Failed to set the D3D9 viewport");
-      return hr;
-    }
-
-    return D3D_OK;
-  }
-
-  HRESULT D3D6Viewport::ApplyAndActivateLights() {
-    std::vector<Com<D3DLight>>& lights = m_commonViewport->GetLights();
-
-    if (!lights.size())
-      return D3D_OK;
-
-    Logger::debug("D3D6Viewport: Applying lights to D3D9");
-
-    for (auto light: lights)
-      ApplyAndActivateLight(light->GetIndex(), light.ptr());
-
-    return D3D_OK;
-  }
-
-  HRESULT D3D6Viewport::DeactivateLights() {
-    std::vector<Com<D3DLight>>& lights = m_commonViewport->GetLights();
-
-    if (!lights.size())
-      return D3D_OK;
-
-    Logger::debug("D3D6Viewport: Deactivating D3D9 lights");
-
-    d3d9::IDirect3DDevice9* d3d9Device = m_commonViewport->GetCommonD3DDevice()->GetD3D9Device();
-
-    for (auto light: lights) {
-      const DWORD lightIndex = light->GetIndex();
-      if (m_commonViewport->HasDevice() && m_commonViewport->IsCurrentViewport() && light->IsActive()) {
-        Logger::debug(str::format("D3D6Viewport: Disabling light nr. ", lightIndex));
-        d3d9Device->LightEnable(lightIndex, FALSE);
-      }
-    }
-
-    return D3D_OK;
-  }
-
-  HRESULT D3D6Viewport::ApplyAndActivateLight(DWORD index, D3DLight* light) {
-    d3d9::IDirect3DDevice9* d3d9Device = m_commonViewport->GetCommonD3DDevice()->GetD3D9Device();
-
-    HRESULT hr = d3d9Device->SetLight(index, light->GetD3D9Light());
-    if (unlikely(FAILED(hr))) {
-      Logger::err("D3D6Viewport: Failed D3D9 SetLight call");
-      return hr;
-    }
-
-    if (light->IsActive()) {
-      Logger::debug(str::format("D3D6Viewport: Enabling D3D9 light nr. ", index));
-      hr = d3d9Device->LightEnable(index, TRUE);
-      if (unlikely(FAILED(hr)))
-        Logger::err("D3D6Viewport: Failed D3D9 LightEnable call (TRUE)");
-    } else {
-      Logger::debug(str::format("D3D6Viewport: Disabling D3D9 light nr. ", index));
-      hr = d3d9Device->LightEnable(index, FALSE);
-      if (unlikely(FAILED(hr)))
-        Logger::err("D3D6Viewport: Failed D3D9 LightEnable call (FALSE)");
-    }
+    commonD3DDevice->UpdateSurfaceDirtyTracking(clearRenderTarget, clearDepthStencil, false);
 
     return D3D_OK;
   }

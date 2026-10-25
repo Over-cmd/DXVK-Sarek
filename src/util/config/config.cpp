@@ -62,10 +62,11 @@ namespace dxvk {
       { "dxgi.hideNvidiaGpu",              "False" },
       { "dxgi.hideIntelGpu",                "True" },
     }} },
-    /* Far Cry 5 and New Dawn                      *
-     * Invisible terrain on Intel                  */
+    /* Far Cry 5 and New Dawn: Unsynchronized     *
+     * write-after-read in some compute shaders   *
+     * cause invisible terrain on some GPUs.      */
     { R"(\\FarCry(5|NewDawn)\.exe$)", {{
-      { "d3d11.zeroInitWorkgroupMemory",    "True" },
+      { "d3d11.forceTgsmBarriers",          "True" },
     }} },
     /* Frostpunk: Renders one frame with D3D9     *
      * after creating the DXGI swap chain         */
@@ -482,6 +483,11 @@ namespace dxvk {
     { R"(\\Astro-Win64-Shipping\.exe$)", {{
       { "dxgi.hideNvidiaGpu",               "True" },
     }} },
+    /* Civilization VI: Overlapping and garbled text  *
+     * with constant buffer range checking enabled    */
+    { R"(\\CivilizationVI\.exe$)", {{
+      { "d3d11.constantBufferRangeCheck",  "False" },
+    }} },
 
     /**********************************************/
     /* D3D9 GAMES                                 */
@@ -576,9 +582,9 @@ namespace dxvk {
     }} },
     /* Counter Strike: Global Offensive
        Needs NVAPI to avoid a forced AO + Smoke
-       exploit so we must force AMD vendor ID.    */
+       exploit so we must hide Nvidia GPUs.       */
     { R"(\\csgo\.exe$)", {{
-      { "d3d9.customVendorId",              "1002" },
+      { "d3d9.hideNvidiaGpu",               "True" },
     }} },
     /* Vampire - The Masquerade Bloodlines        */
     { R"(\\vampire\.exe$)", {{
@@ -596,7 +602,7 @@ namespace dxvk {
     }} },
     /* Skyrim (NVAPI)                             */
     { R"(\\TESV\.exe$)", {{
-      { "d3d9.customVendorId",              "1002" },
+      { "d3d9.hideNvidiaGpu",               "True" },
     }} },
     /* RTHDRIBL Demo
        Uses DONOTWAIT after GetRenderTargetData
@@ -623,7 +629,7 @@ namespace dxvk {
      * makes the game use a better looking render
      * path for mirrors                           */
     { R"(\\(GTAIV|EFLC)\.exe$)", {{
-      { "d3d9.customVendorId",              "1002" },
+      { "d3d9.hideNvidiaGpu",               "True" },
       { "dxgi.maxDeviceMemory",             "128" },
       { "d3d9.supportDFFormats",            "False" },
     }} },
@@ -669,11 +675,11 @@ namespace dxvk {
     /* Warhammer: Online                         *
      * Overly bright ground textures on Nvidia   */
     { R"(\\(WAR(-64)?|WARTEST(-64)?)\.exe$)", {{
-      { "d3d9.customVendorId",              "1002" },
+      { "d3d9.hideNvidiaGpu",               "True" },
     }} },
     /* Dragon Nest                               */
     { R"(\\DragonNest_x64\.exe$)", {{
-      { "d3d9.memoryTrackTest ",            "True" },
+      { "d3d9.memoryTrackTest",             "True" },
     }} },
     /* Dal Segno                                 */
     { R"(\\DST\.exe$)", {{
@@ -695,9 +701,10 @@ namespace dxvk {
     { R"(\\Demonstone\.exe$)", {{
       { "d3d9.maxFrameRate",                "60" },
     }} },
-    /* Far Cry 1 has worse water rendering on AMD GPUs */
+    /* Far Cry 1                                 *
+     * Has worse water rendering on AMD GPUs     */
     { R"(\\FarCry\.exe$)", {{
-      { "d3d9.customVendorId",              "10de" },
+      { "d3d9.hideAmdGpu",                  "True" },
     }} },
     /* Sine Mora EX */
     { R"(\\SineMoraEX\.exe$)", {{
@@ -990,11 +997,13 @@ namespace dxvk {
       { "d3d9.customVendorId",              "10de" },
       { "dxgi.maxDeviceMemory",             "2047" },
     }} },
-    /* Fallout New Vegas - Various visual issues *
-     * with mods such as New Vegas Reloaded      */
-    { R"(\\FalloutNV(Launcher)?\.exe$)", {{
+    /* Fallout New Vegas - Various visual issues  *
+     * in mod New Vegas Reloaded. Nvidia path in  *
+     * same mod use NvAPI_D3D9_StretchRectEx for  *
+     * depth buffer resolves                      */
+    { R"(\\Fallout( -)? New Vegas.*\\(FalloutNV)?(Launcher)?\.exe$)", {{
       { "d3d9.floatEmulation",              "Strict" },
-      { "d3d9.customVendorId",              "1002" },
+      { "d3d9.hideNvidiaGpu",               "True" },
     }} },
     /* Dungeons and Dragons: Dragonshard         *
      * Massive FPS decreases in some scenes      */
@@ -1100,6 +1109,11 @@ namespace dxvk {
       { "d3d9.customDeviceId",              "0330" },
       { "d3d9.customDeviceDesc",            "NVIDIA GeForce FX 5900 Ultra" },
     }} },
+    /* Astebreed                                  *
+     * Game speed is too fast above 60 fps        */
+    { R"(\\Astebreed\.exe$)", {{
+      { "d3d9.maxFrameRate",                "60" },
+    }} },
     /* Psi-Ops: The Mindgate Conspiracy           *
      * Broken input and physics above 60 fps      */
     { R"(\\PsiOps\.exe$)", {{
@@ -1150,6 +1164,11 @@ namespace dxvk {
      * in order to start up properly              */
     { R"(\\SCSDestinations\.exe$)", {{
       { "d3d9.supportCubeDepthFormats",     "True" },
+    }} },
+    /* Splinter Cell: Double Agent                *
+     * AMD path have a semi or fully black world  */
+    { R"(\\(SplinterCell4|SCDA_online)\.exe$)", {{
+      { "d3d9.hideAmdGpu",                  "True" },
     }} },
 
     /**********************************************/
@@ -1389,6 +1408,7 @@ namespace dxvk {
     { R"(\\arx\.exe$)", {{
       { "ddraw.forceLegacyPresent",         "True" },
       { "ddraw.legacyPresentGuard",       "Strict" },
+      { "ddraw.emulateFSAA",                "True" },
     }} },
     /* Sacrifice - Prevents hitching on asset     *
      * loading and fixes broken AI above 60 FPS.  *
@@ -1396,6 +1416,7 @@ namespace dxvk {
     { R"(\\Sacrifice\.exe$)", {{
       { "d3d9.cachedWriteOnlyBuffers",      "True" },
       { "d3d9.maxFrameRate",                 "-60" },
+      { "ddraw.emulateFSAA",                "True" },
       { "ddraw.useD24X8forD32",             "True" },
     }} },
     /* Battle Isle: The Andosia War - Performance *
@@ -1451,20 +1472,17 @@ namespace dxvk {
     /* Empire Earth / Art of Conquest             *
      * Works around in-game flickering            */
     { R"(\\(Empire Earth|EE-AOC)\.exe$)", {{
+      { "d3d9.cachedWriteOnlyBuffers",      "True" },
       { "ddraw.forceLegacyPresent",         "True" },
       { "ddraw.legacyPresentGuard",       "Strict" },
     }} },
-    /* Etherlords                                 *
-     * Needs R3G3B2 support for text rendering    */
+    /* Etherlords                                 */
     { R"(\\Etherlords\.exe$)", {{
       { "ddraw.forceLegacyPresent",         "True" },
-      { "ddraw.supportR3G3B2",              "True" },
     }} },
-    /* Etherlords 2                               *
-     * Needs R3G3B2 support for text rendering    */
+    /* Etherlords 2                               */
     { R"(\\Etherlords2\.exe$)", {{
       { "ddraw.forceLegacyPresent",         "True" },
-      { "ddraw.supportR3G3B2",              "True" },
     }} },
     /* Evil Islands                               */
     { R"(\\Evil Islands\\game\.exe$)", {{
@@ -1482,13 +1500,17 @@ namespace dxvk {
      * Crashes without multithreading protection  */
     { R"(\\SCP - Containment Breach\.exe$)", {{
       { "ddraw.forceLegacyPresent",         "True" },
+      { "ddraw.emulateFSAA",                "True" },
       { "ddraw.forceMultiThreaded",         "True" },
+      { "ddraw.managedVertexBuffers",       "True" },
     }} },
     /* SCP - Nine-Tailed Fox                      *
      * Same engine as Containment Breach          */
     { R"(\\SCP Nine-Tailed Fox\.exe$)", {{
       { "ddraw.forceLegacyPresent",         "True" },
+      { "ddraw.emulateFSAA",                "True" },
       { "ddraw.forceMultiThreaded",         "True" },
+      { "ddraw.managedVertexBuffers",       "True" },
     }} },
     /* Unreal                                     *
      * Fixes missing mip map uploads and physics  */
@@ -1550,6 +1572,7 @@ namespace dxvk {
      * and broken cutscene playback / physics     */
     { R"(\\MessiahD3D\.exe$)", {{
       { "d3d9.maxFrameRate",                 "-60" },
+      { "ddraw.emulateFSAA",                "True" },
       { "ddraw.autoGenMipMaps",             "True" },
     }} },
     /* Might and Magic IX / No One Lives Forever  */
@@ -1572,6 +1595,7 @@ namespace dxvk {
      * loading screens / menu transitions         */
     { R"(\\hitman\.exe$)", {{
       { "d3d9.maxFrameRate",                 "-60" },
+      { "ddraw.emulateFSAA",                "True" },
     }} },
     /* Screamer 4x4 - Broken menu animation speed */
     { R"(\\Screamer4x4_d3d\.exe$)", {{
@@ -1582,6 +1606,7 @@ namespace dxvk {
     { R"(\\Sum\.exe$)", {{
       { "d3d9.maxFrameRate",                 "-60" },
       { "ddraw.viewportZCorrection",        "True" },
+      { "ddraw.emulateFSAA",                "True" },
     }} },
     /* Wizardry 8 - Fixes broken input handling   */
     { R"(\\Wiz8\.exe$)", {{
@@ -1603,14 +1628,20 @@ namespace dxvk {
       { "ddraw.legacyPresentGuard",       "Strict" },
     }} },
     /* Need for Speed: Porsche Unleashed          *
-     * Fixes missing mip maps on car models       */
+     * Fixes missing mip maps on car models       *
+     * and Z-fighting with projected lights       */
     { R"(\\(Porsche|nfs5)\.exe$)", {{
       { "ddraw.autoGenMipMaps",             "True" },
+      { "ddraw.useD16forD24X8",             "True" },
     }} },
     /* Star Trek: Deep Space Nine - The Fallen    *
      * Fixes missing mip map uploads              */
     { R"(\\DS9\.exe$)", {{
       { "ddraw.autoGenMipMaps",             "True" },
+    }} },
+    /* Sacred                                     */
+    { R"(\\Sacred\.exe$)", {{
+      { "ddraw.emulateFSAA",                "True" },
     }} },
     /* StarLancer                                 */
     { R"(\\Lancer\.exe$)", {{
@@ -1658,6 +1689,10 @@ namespace dxvk {
     { R"(\\Tribes2\.exe$)", {{
       { "ddraw.forceLegacyPresent",         "True" },
       { "ddraw.forceSWVP",                  "True" },
+    }} },
+    /* Will Rock                                  */
+    { R"(\\WillRock\.exe$)", {{
+      { "ddraw.emulateFSAA",                "True" },
     }} },
     /* FIFA 2001                                  */
     { R"(\\fifa2001\.exe$)", {{
@@ -1707,6 +1742,19 @@ namespace dxvk {
     /* TrickStyle - fixes Z-fighting              */
     { R"(\\TS_D3D\.exe$)", {{
       { "ddraw.supportD16",                "False" },
+    }} },
+    /* Project I.G.I.: I'm Going In - Performance */
+    { R"(\\IGI\.exe$)", {{
+      { "ddraw.managedVertexBuffers",       "True" },
+    }} },
+    /* Sonic World DX - Performance               */
+    { R"(\\Sonic World DX\.exe$)", {{
+      { "ddraw.managedVertexBuffers",       "True" },
+    }} },
+    /* Discord Times                              */
+    { R"(\\DiscordTimes\.exe$)", {{
+      { "ddraw.forceLegacyPresent",         "True" },
+      { "ddraw.emulateFrontBuffer",         "True" },
     }} },
 
     /**********************************************/
@@ -1762,9 +1810,11 @@ namespace dxvk {
     { R"(\\(KISS.*|Psycho.*)\\client\.exe$)", {{
       { "d3d9.maxFrameRate",                 "-60" },
     }} },
-    /* Enemy Engaged: Apache vs Havoc             */
+    /* Enemy Engaged: Apache vs Havoc             *
+     * Works around slow buffer access patterns   */
     { R"(\\aphavoc\.exe$)", {{
       { "ddraw.forceLegacyPresent",         "True" },
+      { "ddraw.forceSWVP",                  "True" },
     }} },
     /* Star Trek: Starfleet Command               *
      * Works around in-game flickering            */
@@ -1774,12 +1824,13 @@ namespace dxvk {
       { "ddraw.legacyPresentGuard",       "Strict" },
     }} },
     /* Expendable                                 */
-    { R"(\\Expendable\\go_start\.exe$)", {{
+    { R"(\\Expendable\\go(_start)?\.exe$)", {{
+      { "ddraw.emulateFSAA",                "True" },
       { "ddraw.support32BitDepth",         "False" },
     }} },
     /* Total Annihilation: Kingdoms               */
     { R"(\\KINGDOMS\.icd$)", {{
-      { "ddraw.forcePOW2Textures",          "True" },
+      { "ddraw.emulateFSAA",                "True" },
     }} },
     /* Gorky 17                                   */
     { R"(\\gorky17\.exe$)", {{
@@ -1790,8 +1841,15 @@ namespace dxvk {
      * too dark in-game gamma/brightness          */
     { R"(\\Revenant\.exe$)", {{
       { "ddraw.forceLegacyPresent",         "True" },
-      { "ddraw.forcePOW2Textures",          "True" },
       { "ddraw.ignoreGammaRamp",            "True" },
+    }} },
+    /* Re-Volt                                    */
+    { R"(\\revolt\.exe$)", {{
+      { "ddraw.emulateFSAA",                "True" },
+    }} },
+    /* Sea Dogs                                   */
+    { R"(\\Sea Dogs\\ENGINE\.exe$)", {{
+      { "ddraw.emulateFSAA",                "True" },
     }} },
     /* Slave Zero - will not start in 32-bit      *
      * color mode without D32 support             */
@@ -1816,6 +1874,7 @@ namespace dxvk {
     { R"(\\tomb4\.exe$)", {{
       { "ddraw.forceLegacyPresent",         "True" },
       { "ddraw.emulateFrontBuffer",         "True" },
+      { "ddraw.managedVertexBuffers",       "True" },
     }} },
     /* Tomb Raider Chronicles                     *
      * Fixes missing pause screen background      */
@@ -1847,8 +1906,10 @@ namespace dxvk {
       { "ddraw.colorKeyMasking",            "True" },
     }} },
     /* Dungeon Keeper 2                           *
-     * Fixes missing HW acceleration option       */
-    { R"(\\DKII(-DX)?\.exe$)", {{
+     * Fixes fast animation speed at high FPS     *
+     * and missing HW acceleration option         */
+    { R"(\\DKII\.EXE$)", {{
+      { "d3d9.maxFrameRate",                 "-60" },
       { "ddraw.legacyDeviceNames",          "True" },
     }} },
     /* Might and Magic VII: For Blood and Honor   *
@@ -1875,7 +1936,7 @@ namespace dxvk {
     /* Half-Life (: Opposing Force/: Blue Shift)  */
     { R"(\\hl\.exe$)", {{
       { "ddraw.forceLegacyPresent",         "True" },
-      { "ddraw.forceSWVP",                  "True" },
+      { "ddraw.managedVertexBuffers",       "True" },
     }} },
     /* The Sims (& DLCs/Expansion Packs)          */
     { R"(\\Sims\.(exe|icd)$)", {{
@@ -1888,9 +1949,31 @@ namespace dxvk {
     { R"(\\midtown\.(exe|icd)$)", {{
       { "ddraw.legacyDeviceNames",          "True" },
     }} },
-    /* Matrox G400 TechDemo - prevents crashing   */
-    { R"(\\Matrox\.exe$)", {{
-      { "ddraw.forcePOW2Textures",          "True" },
+    /* Toy Story 2: Buzz Lightyear to the Rescue  */
+    { R"(\\toy2\.exe$)", {{
+      { "d3d9.maxFrameRate",                  "30" },
+      { "ddraw.managedVertexBuffers",       "True" },
+    }} },
+    /* Catechumen - Fixes runaway physics         */
+    { R"(\\Catechumen\.exe$)", {{
+      { "d3d9.maxFrameRate",                  "30" },
+    }} },
+    /* MechWarrior 3 - Fixes missing main menu    *
+     * backgrounds on exit and other transitions  */
+    { R"(\\Mech3\.exe$)", {{
+      { "ddraw.forceLegacyPresent",         "True" },
+      { "ddraw.emulateFrontBuffer",         "True" },
+    }} },
+    /* Crimson Skies - Fixes occasional missing   *
+     * loading screens and main menu flickering   */
+    { R"(\\CRIMSON\.(EXE|ICD)$)", {{
+      { "ddraw.forceLegacyPresent",         "True" },
+    }} },
+    /* F/A-18E Super Hornet - Works around        *
+     * main menu flickers on return from gameplay */
+    { R"(\\F18\.exe$)", {{
+      { "ddraw.forceLegacyPresent",         "True" },
+      { "ddraw.emulateFrontBuffer",         "True" },
     }} },
 
     /**********************************************/
@@ -1939,14 +2022,20 @@ namespace dxvk {
     /* FIFA '99                                   */
     { R"(\\fifa99\.exe$)", {{
       { "ddraw.forceLegacyPresent",         "True" },
+      { "ddraw.emulateFSAA",                "True" },
     }} },
     /* The Longest Journey                        */
     { R"(\\The Longest Journey\\game\.exe$)", {{
       { "ddraw.forceLegacyPresent",         "True" },
     }} },
+    /* Virtua Fighter 2                           */
+    { R"(\\VF2\.exe$)", {{
+      { "ddraw.emulateFSAA",                "True" },
+    }} },
     /* Warhammer: Dark Omen                       *
      * Fixes missing pause screen background      */
     { R"(\\DarkOmen\.exe$)", {{
+      { "ddraw.emulateFSAA",                "True" },
       { "ddraw.forceLegacyPresent",         "True" },
       { "ddraw.emulateFrontBuffer",         "True" },
     }} },
@@ -1973,6 +2062,19 @@ namespace dxvk {
     { R"(\\OVERSEER\.exe$)", {{
       { "ddraw.forceLegacyPresent",         "True" },
     }} },
+    /* Resident Evil 2                            *
+     * Fixes black lines in the background image  */
+    { R"(\\(ClaireU|LeonU)\.exe$)", {{
+      { "ddraw.forceLegacyPresent",         "True" },
+      { "ddraw.alternatePixelCenter",       "True" },
+    }} },
+    /* Frogger: He's Back!                        *
+     * Typically capped to 25 FPS, however it     *
+     * runs without a frame limit and exhibits    *
+     * accelerated animations on some menus       */
+    { R"(\\frogger\.exe$)", {{
+      { "d3d9.maxFrameRate",                 "-25" },
+    }} },
 
     /**********************************************/
     /* D3D3 GAMES                                 */
@@ -1981,7 +2083,7 @@ namespace dxvk {
     /* Resident Evil                              *
      * Fixes black lines in the background image  */
     { R"(\\ResidentEvil\.exe$)", {{
-      { "ddraw.vertexOffset",               "-0.5" },
+      { "ddraw.alternatePixelCenter",     "Legacy" },
     }} },
     /* Star Trek: Starfleet Academy               */
     { R"(\\sfad3d\.exe$)", {{

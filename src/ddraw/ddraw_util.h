@@ -12,14 +12,107 @@
 namespace dxvk {
 
   struct PackedVertexBuffer {
+    size_t stride;
     std::vector<uint8_t> vertexData;
-    UINT stride;
   };
 
-  struct VertexStreamInfo {
-    D3DPRIMITIVETYPE d3dpt;
-    D3DVERTEXTYPE d3dvt;
-    DWORD dwFlags = 0;
+  struct VertexStream {
+  private:
+    bool          initialized = false;
+    D3DVERTEXTYPE cvt         = D3DVERTEXTYPE(0);
+
+  public:
+    D3DPRIMITIVETYPE d3dpt   = D3DPRIMITIVETYPE(0);
+    D3DVERTEXTYPE    d3dvt   = D3DVERTEXTYPE(0);
+    DWORD            dwFlags = 0;
+
+    union {
+      std::vector<D3DVERTEX>* vertex;
+      std::vector<D3DLVERTEX>* lvertex;
+      std::vector<D3DTLVERTEX>* tlvertex;
+    } stream = { nullptr };
+
+    VertexStream() = default;
+    // Don't allow copies, since they aren't handled
+    VertexStream(const VertexStream&) = delete;
+    VertexStream& operator=(const VertexStream&) = delete;
+
+    bool isInitialized() const {
+      return initialized;
+    }
+
+    void initialize() {
+      if (likely(cvt != D3DVERTEXTYPE(0))) {
+        if (likely(cvt == d3dvt)) {
+          switch (cvt) {
+            case D3DVT_VERTEX:
+              stream.vertex->clear();
+              break;
+            case D3DVT_LVERTEX:
+              stream.lvertex->clear();
+              break;
+            case D3DVT_TLVERTEX:
+              stream.tlvertex->clear();
+              break;
+            default:
+              break;
+          }
+
+          initialized = true;
+
+          return;
+        }
+
+        release();
+      }
+
+      switch (d3dvt) {
+        default:
+        case D3DVT_VERTEX:
+          stream.vertex = new std::vector<D3DVERTEX>();
+          cvt = D3DVT_VERTEX;
+          break;
+        case D3DVT_LVERTEX:
+          stream.lvertex = new std::vector<D3DLVERTEX>();
+          cvt = D3DVT_LVERTEX;
+          break;
+        case D3DVT_TLVERTEX:
+          stream.tlvertex = new std::vector<D3DTLVERTEX>();
+          cvt = D3DVT_TLVERTEX;
+          break;
+      }
+
+      initialized = true;
+    }
+
+    void reset() {
+      d3dpt   = D3DPRIMITIVETYPE(0);
+      d3dvt   = D3DVERTEXTYPE(0);
+      dwFlags = 0;
+
+      initialized = false;
+    }
+
+    void release() {
+      switch (cvt) {
+        case D3DVT_VERTEX:
+          delete stream.vertex;
+          break;
+        case D3DVT_LVERTEX:
+          delete stream.lvertex;
+          break;
+        case D3DVT_TLVERTEX:
+          delete stream.tlvertex;
+          break;
+        default:
+          break;
+      }
+      cvt = D3DVERTEXTYPE(0);
+    }
+
+    ~VertexStream() {
+      release();
+    }
   };
 
   inline bool IsValidDDrawCapsSize(DWORD size) {
@@ -85,14 +178,14 @@ namespace dxvk {
     }
   }
 
-  inline DWORD ConvertD3D6LockFlags(DWORD lockFlags, bool isSurface) {
+  inline DWORD ConvertD3DLockFlags(DWORD lockFlags, bool legacyDiscard, bool useExtendedFlags) {
     DWORD lockFlagsD3D9 = 0;
 
-    // DDLOCK_WAIT is default for DDraw surfaces, so ignore it
-    // and only factor in DDLOCK_DONOTWAIT. Buffers locks have
-    // a flipped logic compared to D3D9.
-    if ((!isSurface && !(lockFlags & DDLOCK_WAIT))
-     || (isSurface  &&  (lockFlags & DDLOCK_DONOTWAIT))) {
+    // Note: D3DLOCK_DONOTWAIT is ignored on D3D9 DYNAMIC buffers,
+    // and we mark nearly all buffers as DYNAMIC, but convert it anyway,
+    // for MANAGED buffers. Keep in mind the vertex buffer lock flag
+    // logic is flipped vs DDraw surfaces, which implicitly wait on locks.
+    if (!(lockFlags & DDLOCK_WAIT)) {
       lockFlagsD3D9 |= (DWORD)D3DLOCK_DONOTWAIT;
     }
     if (lockFlags & DDLOCK_NOSYSLOCK) {
@@ -102,72 +195,40 @@ namespace dxvk {
     if ((lockFlags & DDLOCK_READONLY) && !(lockFlags & DDLOCK_WRITEONLY)) {
       lockFlagsD3D9 |= (DWORD)D3DLOCK_READONLY;
     }
-
-    return lockFlagsD3D9;
-  }
-
-  inline DWORD ConvertD3D7LockFlags(DWORD lockFlags, bool legacyDiscard, bool isSurface) {
-    DWORD lockFlagsD3D9 = 0;
-
-    // DDLOCK_WAIT is default for DDraw7 surfaces, so ignore it
-    // and only factor in DDLOCK_DONOTWAIT. Buffers locks have
-    // a flipped logic compared to D3D9.
-    if ((!isSurface && !(lockFlags & DDLOCK_WAIT))
-     || (isSurface  &&  (lockFlags & DDLOCK_DONOTWAIT))) {
-      lockFlagsD3D9 |= (DWORD)D3DLOCK_DONOTWAIT;
-    }
-    if (lockFlags & DDLOCK_NOSYSLOCK) {
-      lockFlagsD3D9 |= (DWORD)D3DLOCK_NOSYSLOCK;
-    }
-    // Not sure if both can happen at the same time, but play it safe
-    if ((lockFlags & DDLOCK_READONLY) && !(lockFlags & DDLOCK_WRITEONLY)) {
-      lockFlagsD3D9 |= (DWORD)D3DLOCK_READONLY;
-    }
-    // This is called "legacy DISCARD" in D8VK, which apparently
-    // is expected to be enforced implicitly in D3D7. Earlier versions
-    // of D3D do not feature a DISCARD (or NOOVERWRITE) lock flag.
-    if ((lockFlags & DDLOCK_DISCARDCONTENTS) && !legacyDiscard) {
-      lockFlagsD3D9 |= (DWORD)D3DLOCK_DISCARD;
-    }
-    if (lockFlags & DDLOCK_NOOVERWRITE) {
-      lockFlagsD3D9 |= (DWORD)D3DLOCK_NOOVERWRITE;
+    if (useExtendedFlags) {
+      // This is called "legacy DISCARD" in D8VK, which apparently
+      // is expected to be enforced implicitly in D3D7. D3D6 vertex
+      // buffers do not use a DISCARD or NOOVERWRITE lock flag.
+      if ((lockFlags & DDLOCK_DISCARDCONTENTS) && !legacyDiscard) {
+        lockFlagsD3D9 |= (DWORD)D3DLOCK_DISCARD;
+      }
+      if (lockFlags & DDLOCK_NOOVERWRITE) {
+        lockFlagsD3D9 |= (DWORD)D3DLOCK_NOOVERWRITE;
+      }
     }
 
     return lockFlagsD3D9;
   }
 
-  inline DWORD ConvertD3D6UsageFlags(DWORD usageFlags, DWORD creationFlags) {
+  inline DWORD ConvertD3DUsageFlags(DWORD usageFlags, DWORD creationFlags, d3d9::D3DPOOL pool) {
     DWORD usageFlagsD3D9 = 0;
 
     // The D3D6 docs do not mention the presence of a D3DVBCAPS_DONOTCLIP flag,
     // and only the creation flag D3DDP_DONOTCLIP is touted as being usable
-    if ((creationFlags & D3DDP_DONOTCLIP) || (usageFlags & D3DVBCAPS_DONOTCLIP)) {
+    if ((usageFlags & D3DVBCAPS_DONOTCLIP) || (creationFlags & D3DDP_DONOTCLIP)) {
       usageFlagsD3D9 |= (DWORD)D3DUSAGE_DONOTCLIP;
     }
     if (usageFlags & D3DVBCAPS_WRITEONLY) {
       usageFlagsD3D9 |= (DWORD)D3DUSAGE_WRITEONLY;
     }
-
-    // D3D6 does not use DDLOCK_DISCARDCONTENTS or
-    // DDLOCK_NOOVERWRITE, however, still mark all buffers
-    // as DYNAMIC to handle any potential CPU read-backs
-    return usageFlagsD3D9 | D3DUSAGE_DYNAMIC;
-  }
-
-  inline DWORD ConvertD3D7UsageFlags(DWORD usageFlags) {
-    DWORD usageFlagsD3D9 = 0;
-
-    if (usageFlags & D3DVBCAPS_DONOTCLIP) {
-      usageFlagsD3D9 |= (DWORD)D3DUSAGE_DONOTCLIP;
-    }
-    if (usageFlags & D3DVBCAPS_WRITEONLY) {
-      usageFlagsD3D9 |= (DWORD)D3DUSAGE_WRITEONLY;
+    if (pool != d3d9::D3DPOOL_MANAGED) {
+      // IDirect3DVertexBuffer (D3D6) does not use DDLOCK_DISCARDCONTENTS
+      // or DDLOCK_NOOVERWRITE, however, still mark all non-MANAGED
+      // buffers as DYNAMIC to handle any potential CPU read-backs
+      usageFlagsD3D9 |= D3DUSAGE_DYNAMIC;
     }
 
-    // Though D3D7 does not specify it, all buffers need
-    // to be DYNAMIC, either due to some lock flags not
-    // working properly otherwise, or for performance reasons
-    return usageFlagsD3D9 | D3DUSAGE_DYNAMIC;
+    return usageFlagsD3D9;
   }
 
   inline size_t GetFVFPositionSize(DWORD fvf) {
@@ -251,15 +312,15 @@ namespace dxvk {
     return size;
   }
 
-  inline UINT GetPrimitiveCount(D3DPRIMITIVETYPE PrimitiveType, DWORD VertexCount) {
+  inline uint32_t GetPrimitiveCount(D3DPRIMITIVETYPE PrimitiveType, DWORD VertexCount) {
     switch (PrimitiveType) {
-      case D3DPT_POINTLIST:     return static_cast<UINT>(VertexCount);
-      case D3DPT_LINELIST:      return static_cast<UINT>(VertexCount / 2);
-      case D3DPT_LINESTRIP:     return static_cast<UINT>(VertexCount - 1);
+      case D3DPT_POINTLIST:     return static_cast<uint32_t>(VertexCount);
+      case D3DPT_LINELIST:      return static_cast<uint32_t>(VertexCount / 2);
+      case D3DPT_LINESTRIP:     return static_cast<uint32_t>(VertexCount - 1);
       default:
-      case D3DPT_TRIANGLELIST:  return static_cast<UINT>(VertexCount / 3);
-      case D3DPT_TRIANGLESTRIP: return static_cast<UINT>(VertexCount - 2);
-      case D3DPT_TRIANGLEFAN:   return static_cast<UINT>(VertexCount - 2);
+      case D3DPT_TRIANGLELIST:  return static_cast<uint32_t>(VertexCount / 3);
+      case D3DPT_TRIANGLESTRIP: return static_cast<uint32_t>(VertexCount - 2);
+      case D3DPT_TRIANGLEFAN:   return static_cast<uint32_t>(VertexCount - 2);
     }
   }
 
@@ -334,7 +395,7 @@ namespace dxvk {
 
   inline DWORD DecodeD3D7TexFilterValues(const D3DTEXTURESTAGESTATETYPE StageType, const DWORD FilterType7) {
     switch (StageType) {
-      case D3DTSS_MAGFILTER: {
+      case D3DTSS_MAGFILTER:
         switch (FilterType7) {
           default:
           case D3DTFG_POINT:          return d3d9::D3DTEXF_POINT;
@@ -343,8 +404,7 @@ namespace dxvk {
           case D3DTFG_ANISOTROPIC:    return d3d9::D3DTEXF_ANISOTROPIC;
         }
         break;
-      }
-      case D3DTSS_MINFILTER: {
+      case D3DTSS_MINFILTER:
         switch (FilterType7) {
           default:
           case D3DTFN_POINT:          return d3d9::D3DTEXF_POINT;
@@ -352,8 +412,7 @@ namespace dxvk {
           case D3DTFN_ANISOTROPIC:    return d3d9::D3DTEXF_ANISOTROPIC;
         }
         break;
-      }
-      case D3DTSS_MIPFILTER: {
+      case D3DTSS_MIPFILTER:
         switch (FilterType7) {
           // All values in D3DTEXTUREMIPFILTER are offset by +1
           // vs D3DTEXTUREFILTERTYPE...
@@ -363,14 +422,13 @@ namespace dxvk {
           case D3DTFP_LINEAR:         return d3d9::D3DTEXF_LINEAR;
         }
         break;
-      }
       default: return 0;
     }
   }
 
   inline DWORD DecodeD3D9TexFilterValues(const D3DTEXTURESTAGESTATETYPE StageType, const DWORD FilterType9) {
     switch (StageType) {
-      case D3DTSS_MAGFILTER: {
+      case D3DTSS_MAGFILTER:
         switch (FilterType9) {
           default:
           case d3d9::D3DTEXF_POINT:       return D3DTFG_POINT;
@@ -379,8 +437,7 @@ namespace dxvk {
           case d3d9::D3DTEXF_ANISOTROPIC: return D3DTFG_ANISOTROPIC;
         }
         break;
-      }
-      case D3DTSS_MINFILTER: {
+      case D3DTSS_MINFILTER:
         switch (FilterType9) {
           default:
           case d3d9::D3DTEXF_POINT:       return D3DTFN_POINT;
@@ -388,8 +445,7 @@ namespace dxvk {
           case d3d9::D3DTEXF_ANISOTROPIC: return D3DTFN_ANISOTROPIC;
         }
         break;
-      }
-      case D3DTSS_MIPFILTER: {
+      case D3DTSS_MIPFILTER:
         switch (FilterType9) {
           // All values in D3DTEXTUREMIPFILTER are offset by +1
           // vs D3DTEXTUREFILTERTYPE...
@@ -399,28 +455,30 @@ namespace dxvk {
           case d3d9::D3DTEXF_LINEAR:      return D3DTFP_LINEAR;
         }
         break;
-      }
       default: return 0;
     }
   }
 
   inline DWORD DecodeTextureMinValues(DWORD minFilter, DWORD mipFilter) {
-    if (minFilter == d3d9::D3DTEXF_POINT) {
-      switch(mipFilter) {
-        default:
-        case d3d9::D3DTEXF_NONE:   return D3DFILTER_NEAREST;
-        case d3d9::D3DTEXF_POINT:  return D3DFILTER_MIPNEAREST;
-        case d3d9::D3DTEXF_LINEAR: return D3DFILTER_LINEARMIPNEAREST;
-      }
-    } else if (minFilter == d3d9::D3DTEXF_LINEAR) {
-      switch(mipFilter) {
-        default:
-        case d3d9::D3DTEXF_NONE:   return D3DFILTER_LINEAR;
-        case d3d9::D3DTEXF_POINT:  return D3DFILTER_MIPLINEAR;
-        case d3d9::D3DTEXF_LINEAR: return D3DFILTER_LINEARMIPLINEAR;
-      }
+    switch (minFilter) {
+      case d3d9::D3DTEXF_POINT:
+        switch (mipFilter) {
+          default:
+          case d3d9::D3DTEXF_NONE:   return D3DFILTER_NEAREST;
+          case d3d9::D3DTEXF_POINT:  return D3DFILTER_MIPNEAREST;
+          case d3d9::D3DTEXF_LINEAR: return D3DFILTER_LINEARMIPNEAREST;
+        }
+        break;
+      case d3d9::D3DTEXF_LINEAR:
+        switch (mipFilter) {
+          default:
+          case d3d9::D3DTEXF_NONE:   return D3DFILTER_LINEAR;
+          case d3d9::D3DTEXF_POINT:  return D3DFILTER_MIPLINEAR;
+          case d3d9::D3DTEXF_LINEAR: return D3DFILTER_LINEARMIPLINEAR;
+        }
+        break;
+      default: return 0;
     }
-    return 0;
   }
 
   inline HRESULT ValidateViewportRT(
@@ -437,7 +495,6 @@ namespace dxvk {
       if (unlikely(isOnePixelWider || isOnePixelTaller)) {
         Logger::debug("ValidateViewportRT: Viewport exceeds render target dimensions by one pixel");
       } else {
-        Logger::debug("ValidateViewportRT: Viewport exceeds render target dimensions");
         return DDERR_INVALIDPARAMS;
       }
     }
@@ -445,7 +502,7 @@ namespace dxvk {
     return D3D_OK;
   }
 
-  inline D3DDEVICEDESC3 GetD3D3Caps(const IID rclsid, const D3DOptions* options) {
+  inline D3DDEVICEDESC3 GetD3D3BaseCaps(const D3DOptions* options) {
     D3DDEVICEDESC3 desc;
 
     desc.dwSize    = sizeof(D3DDEVICEDESC3);
@@ -475,14 +532,6 @@ namespace dxvk {
                    | D3DDEVCAPS_TLVERTEXSYSTEMMEMORY
                    | D3DDEVCAPS_TLVERTEXVIDEOMEMORY;
 
-    // Also advertised in D3D3
-    if (rclsid == IID_IDirect3DHALDevice || rclsid == IID_WineD3DDevice) {
-      desc.dwDevCaps |= D3DDEVCAPS_HWRASTERIZATION
-                      | D3DDEVCAPS_HWTRANSFORMANDLIGHT
-                      | D3DDEVCAPS_DRAWPRIMITIVES2
-                      | D3DDEVCAPS_DRAWPRIMITIVES2EX;
-    }
-
     D3DTRANSFORMCAPS transformCaps;
     transformCaps.dwSize = sizeof(D3DTRANSFORMCAPS);
     transformCaps.dwCaps = D3DTRANSFORMCAPS_CLIP;
@@ -493,11 +542,11 @@ namespace dxvk {
 
     D3DLIGHTINGCAPS lightingCaps;
     lightingCaps.dwSize  = sizeof(D3DLIGHTINGCAPS);
-    lightingCaps.dwCaps  = D3DLIGHTCAPS_DIRECTIONAL
-                      // | D3DLIGHTCAPS_GLSPOT
-                         | D3DLIGHTCAPS_PARALLELPOINT // Not supported by D3D9
-                         | D3DLIGHTCAPS_POINT
-                         | D3DLIGHTCAPS_SPOT;
+    lightingCaps.dwCaps  = D3DLIGHTCAPS_POINT
+                         | D3DLIGHTCAPS_SPOT
+                         | D3DLIGHTCAPS_DIRECTIONAL
+                         | D3DLIGHTCAPS_PARALLELPOINT; // Not supported by D3D9
+                      // | D3DLIGHTCAPS_GLSPOT; // Specific to D3D3
     lightingCaps.dwLightingModel = D3DLIGHTINGMODEL_RGB;
     lightingCaps.dwNumLights = ddrawCaps::MaxEnabledLights;
 
@@ -510,16 +559,16 @@ namespace dxvk {
                               | D3DPMISCCAPS_CULLCW
                               | D3DPMISCCAPS_CULLNONE
                            // | D3DPMISCCAPS_CONFORMANT
-                           // | D3DPMISCCAPS_LINEPATTERNREP // Not implemented in D3D9
+                           // | D3DPMISCCAPS_LINEPATTERNREP
                            // | D3DPMISCCAPS_MASKPLANES
                               | D3DPMISCCAPS_MASKZ;
 
     prim.dwRasterCaps         = D3DPRASTERCAPS_DITHER
                               | D3DPRASTERCAPS_FOGTABLE
                               | D3DPRASTERCAPS_FOGVERTEX
-                           // | D3DPRASTERCAPS_PAT // Not implemented in D3D9
+                           // | D3DPRASTERCAPS_PAT
                            // | D3DPRASTERCAPS_ROP2
-                              | D3DPRASTERCAPS_STIPPLE // Technically not implemented
+                           // | D3DPRASTERCAPS_STIPPLE
                               | D3DPRASTERCAPS_SUBPIXEL
                            // | D3DPRASTERCAPS_SUBPIXELX
                            // | D3DPRASTERCAPS_XOR
@@ -577,12 +626,10 @@ namespace dxvk {
     prim.dwTextureCaps        = D3DPTEXTURECAPS_ALPHA
                               | D3DPTEXTURECAPS_BORDER
                               | D3DPTEXTURECAPS_PERSPECTIVE
+                              | D3DPTEXTURECAPS_POW2 // Always reported on early D3D cards
+                              | D3DPTEXTURECAPS_NONPOW2CONDITIONAL // Reported only on later (D3D7/8) D3D cards
                            // | D3DPTEXTURECAPS_SQUAREONLY
                               | D3DPTEXTURECAPS_TRANSPARENCY;
-
-    if (unlikely(options->forcePOW2Textures)) {
-      prim.dwTextureCaps |= D3DPTEXTURECAPS_POW2;
-    }
 
     prim.dwTextureFilterCaps  = D3DPTFILTERCAPS_LINEAR
                               | D3DPTFILTERCAPS_LINEARMIPLINEAR
@@ -603,8 +650,8 @@ namespace dxvk {
                               | D3DPTADDRESSCAPS_MIRROR
                               | D3DPTADDRESSCAPS_WRAP;
 
-    prim.dwStippleWidth       = 32;
-    prim.dwStippleHeight      = 32;
+    prim.dwStippleWidth       = 0;
+    prim.dwStippleHeight      = 0;
 
     desc.dpcLineCaps          = prim;
     desc.dpcTriCaps           = prim;
@@ -617,7 +664,21 @@ namespace dxvk {
     return desc;
   }
 
-  inline D3DDEVICEDESC2 GetD3D5Caps(const IID rclsid, const D3DOptions* options) {
+  inline void ApplyD3D3DeviceCaps(D3DDEVICEDESC3* desc, const IID rclsid) {
+    if (rclsid == IID_IDirect3DHALDevice) {
+      desc->dwDevCaps |= D3DDEVCAPS_HWRASTERIZATION
+                       | D3DDEVCAPS_HWTRANSFORMANDLIGHT
+                       | D3DDEVCAPS_DRAWPRIMITIVES2
+                       | D3DDEVCAPS_DRAWPRIMITIVES2EX;
+    } else {
+      desc->dwDevCaps &= ~D3DDEVCAPS_HWRASTERIZATION
+                       & ~D3DDEVCAPS_HWTRANSFORMANDLIGHT
+                       & ~D3DDEVCAPS_DRAWPRIMITIVES2
+                       & ~D3DDEVCAPS_DRAWPRIMITIVES2EX;
+    }
+  }
+
+  inline D3DDEVICEDESC2 GetD3D5BaseCaps(const D3DOptions* options) {
     D3DDEVICEDESC2 desc;
 
     desc.dwSize    = sizeof(D3DDEVICEDESC2);
@@ -645,7 +706,7 @@ namespace dxvk {
                 // | D3DDEVCAPS_SORTDECREASINGZ
                 // | D3DDEVCAPS_SORTEXACT
                 // | D3DDEVCAPS_SORTINCREASINGZ
-                // | D3DDEVCAPS_TEXTURENONLOCALVIDMEM // Exposed though a config option
+                // | D3DDEVCAPS_TEXTURENONLOCALVIDMEM // Exposed through a config option
                 // | D3DDEVCAPS_TEXTURESYSTEMMEMORY
                    | D3DDEVCAPS_TEXTUREVIDEOMEMORY
                    | D3DDEVCAPS_TLVERTEXSYSTEMMEMORY
@@ -654,14 +715,6 @@ namespace dxvk {
     // Powerslide uses a broken rendering path if non-local video memory is advertized
     if (likely(options->nonLocalVideoMemory)) {
       desc.dwDevCaps |= D3DDEVCAPS_TEXTURENONLOCALVIDMEM;
-    }
-
-    // Also advertised in D3D5
-    if (rclsid == IID_IDirect3DHALDevice || rclsid == IID_WineD3DDevice) {
-      desc.dwDevCaps |= D3DDEVCAPS_HWRASTERIZATION
-                      | D3DDEVCAPS_HWTRANSFORMANDLIGHT
-                      | D3DDEVCAPS_DRAWPRIMITIVES2
-                      | D3DDEVCAPS_DRAWPRIMITIVES2EX;
     }
 
     D3DTRANSFORMCAPS transformCaps;
@@ -674,11 +727,10 @@ namespace dxvk {
 
     D3DLIGHTINGCAPS lightingCaps;
     lightingCaps.dwSize  = sizeof(D3DLIGHTINGCAPS);
-    lightingCaps.dwCaps  = D3DLIGHTCAPS_DIRECTIONAL
-                      // | D3DLIGHTCAPS_GLSPOT
-                         | D3DLIGHTCAPS_PARALLELPOINT // Not supported by D3D9
-                         | D3DLIGHTCAPS_POINT
-                         | D3DLIGHTCAPS_SPOT;
+    lightingCaps.dwCaps  = D3DLIGHTCAPS_POINT
+                         | D3DLIGHTCAPS_SPOT
+                         | D3DLIGHTCAPS_DIRECTIONAL
+                         | D3DLIGHTCAPS_PARALLELPOINT; // Not supported by D3D9
     lightingCaps.dwLightingModel = D3DLIGHTINGMODEL_RGB;
     lightingCaps.dwNumLights = ddrawCaps::MaxEnabledLights;
 
@@ -691,12 +743,12 @@ namespace dxvk {
                               | D3DPMISCCAPS_CULLCW
                               | D3DPMISCCAPS_CULLNONE
                            // | D3DPMISCCAPS_CONFORMANT
-                           // | D3DPMISCCAPS_LINEPATTERNREP // Not implemented in D3D9
+                           // | D3DPMISCCAPS_LINEPATTERNREP
                            // | D3DPMISCCAPS_MASKPLANES
                               | D3DPMISCCAPS_MASKZ;
 
     prim.dwRasterCaps         = D3DPRASTERCAPS_ANISOTROPY
-                              | D3DPRASTERCAPS_ANTIALIASEDGES // Technically not implemented in D3D9
+                           // | D3DPRASTERCAPS_ANTIALIASEDGES // Not implemented in D3D9
                            // | D3DPRASTERCAPS_ANTIALIASSORTDEPENDENT
                            // | D3DPRASTERCAPS_ANTIALIASSORTINDEPENDENT
                               | D3DPRASTERCAPS_DITHER
@@ -704,9 +756,9 @@ namespace dxvk {
                               | D3DPRASTERCAPS_FOGTABLE
                               | D3DPRASTERCAPS_FOGVERTEX
                               | D3DPRASTERCAPS_MIPMAPLODBIAS
-                           // | D3DPRASTERCAPS_PAT // Not implemented in D3D9
+                           // | D3DPRASTERCAPS_PAT
                            // | D3DPRASTERCAPS_ROP2
-                              | D3DPRASTERCAPS_STIPPLE // Technically not implemented
+                           // | D3DPRASTERCAPS_STIPPLE
                               | D3DPRASTERCAPS_SUBPIXEL
                            // | D3DPRASTERCAPS_SUBPIXELX
                            // | D3DPRASTERCAPS_TRANSLUCENTSORTINDEPENDENT
@@ -714,13 +766,12 @@ namespace dxvk {
                               | D3DPRASTERCAPS_WFOG
                            // | D3DPRASTERCAPS_XOR
                               | D3DPRASTERCAPS_ZBIAS
-                           // | D3DPRASTERCAPS_ZBUFFERLESSHSR // Easy footgun to not get a z-buffer
+                           // | D3DPRASTERCAPS_ZBUFFERLESSHSR
                               | D3DPRASTERCAPS_ZFOG
                               | D3DPRASTERCAPS_ZTEST;
 
     if (unlikely(options->emulateFSAA != FSAAEmulation::Disabled)) {
-      prim.dwRasterCaps |= D3DPRASTERCAPS_ANTIALIASSORTDEPENDENT
-                        |  D3DPRASTERCAPS_ANTIALIASSORTINDEPENDENT;
+      prim.dwRasterCaps |= D3DPRASTERCAPS_ANTIALIASSORTINDEPENDENT;
     }
 
     prim.dwZCmpCaps           = D3DPCMPCAPS_ALWAYS
@@ -775,12 +826,10 @@ namespace dxvk {
     prim.dwTextureCaps        = D3DPTEXTURECAPS_ALPHA
                               | D3DPTEXTURECAPS_BORDER
                               | D3DPTEXTURECAPS_PERSPECTIVE
+                              | D3DPTEXTURECAPS_POW2 // Always reported on early D3D cards
+                              | D3DPTEXTURECAPS_NONPOW2CONDITIONAL // Reported only on later (D3D7/8) D3D cards
                            // | D3DPTEXTURECAPS_SQUAREONLY
                               | D3DPTEXTURECAPS_TRANSPARENCY;
-
-    if (unlikely(options->forcePOW2Textures)) {
-      prim.dwTextureCaps |= D3DPTEXTURECAPS_POW2;
-    }
 
     prim.dwTextureFilterCaps  = D3DPTFILTERCAPS_LINEAR
                               | D3DPTFILTERCAPS_LINEARMIPLINEAR
@@ -804,8 +853,8 @@ namespace dxvk {
                               | D3DPTADDRESSCAPS_MIRROR
                               | D3DPTADDRESSCAPS_WRAP;
 
-    prim.dwStippleWidth       = 32;
-    prim.dwStippleHeight      = 32;
+    prim.dwStippleWidth       = 0;
+    prim.dwStippleHeight      = 0;
 
     desc.dpcLineCaps          = prim;
     desc.dpcTriCaps           = prim;
@@ -826,7 +875,21 @@ namespace dxvk {
     return desc;
   }
 
-  inline D3DDEVICEDESC GetD3D6Caps(const IID rclsid, const D3DOptions* options) {
+  inline void ApplyD3D5DeviceCaps(D3DDEVICEDESC2* desc, const IID rclsid) {
+    if (rclsid == IID_IDirect3DHALDevice) {
+      desc->dwDevCaps |= D3DDEVCAPS_HWRASTERIZATION
+                       | D3DDEVCAPS_HWTRANSFORMANDLIGHT
+                       | D3DDEVCAPS_DRAWPRIMITIVES2
+                       | D3DDEVCAPS_DRAWPRIMITIVES2EX;
+    } else {
+      desc->dwDevCaps &= ~D3DDEVCAPS_HWRASTERIZATION
+                       & ~D3DDEVCAPS_HWTRANSFORMANDLIGHT
+                       & ~D3DDEVCAPS_DRAWPRIMITIVES2
+                       & ~D3DDEVCAPS_DRAWPRIMITIVES2EX;
+    }
+  }
+
+  inline D3DDEVICEDESC GetD3D6BaseCaps(const D3DOptions* options) {
     D3DDEVICEDESC desc;
 
     desc.dwSize    = sizeof(D3DDEVICEDESC);
@@ -854,7 +917,7 @@ namespace dxvk {
                 // | D3DDEVCAPS_SORTDECREASINGZ
                 // | D3DDEVCAPS_SORTEXACT
                 // | D3DDEVCAPS_SORTINCREASINGZ
-                // | D3DDEVCAPS_TEXTURENONLOCALVIDMEM // Exposed though a config option
+                // | D3DDEVCAPS_TEXTURENONLOCALVIDMEM // Exposed through a config option
                 // | D3DDEVCAPS_TEXTURESYSTEMMEMORY
                    | D3DDEVCAPS_TEXTUREVIDEOMEMORY
                    | D3DDEVCAPS_TLVERTEXSYSTEMMEMORY
@@ -863,14 +926,6 @@ namespace dxvk {
     // Powerslide uses a broken rendering path if non-local video memory is advertized
     if (likely(options->nonLocalVideoMemory)) {
       desc.dwDevCaps |= D3DDEVCAPS_TEXTURENONLOCALVIDMEM;
-    }
-
-    // Also advertised in D3D6
-    if (rclsid == IID_IDirect3DHALDevice || rclsid == IID_WineD3DDevice) {
-      desc.dwDevCaps |= D3DDEVCAPS_HWRASTERIZATION
-                      | D3DDEVCAPS_HWTRANSFORMANDLIGHT
-                      | D3DDEVCAPS_DRAWPRIMITIVES2
-                      | D3DDEVCAPS_DRAWPRIMITIVES2EX;
     }
 
     D3DTRANSFORMCAPS transformCaps;
@@ -883,11 +938,10 @@ namespace dxvk {
 
     D3DLIGHTINGCAPS lightingCaps;
     lightingCaps.dwSize  = sizeof(D3DLIGHTINGCAPS);
-    lightingCaps.dwCaps  = D3DLIGHTCAPS_DIRECTIONAL
-                      // | D3DLIGHTCAPS_GLSPOT
-                         | D3DLIGHTCAPS_PARALLELPOINT // Not supported by D3D9
-                         | D3DLIGHTCAPS_POINT
-                         | D3DLIGHTCAPS_SPOT;
+    lightingCaps.dwCaps  = D3DLIGHTCAPS_POINT
+                         | D3DLIGHTCAPS_SPOT
+                         | D3DLIGHTCAPS_DIRECTIONAL
+                         | D3DLIGHTCAPS_PARALLELPOINT; // Not supported by D3D9
     lightingCaps.dwLightingModel = D3DLIGHTINGMODEL_RGB;
     lightingCaps.dwNumLights = ddrawCaps::MaxEnabledLights;
 
@@ -900,12 +954,12 @@ namespace dxvk {
                               | D3DPMISCCAPS_CULLCW
                               | D3DPMISCCAPS_CULLNONE
                            // | D3DPMISCCAPS_CONFORMANT
-                           // | D3DPMISCCAPS_LINEPATTERNREP // Not implemented in D3D9
+                           // | D3DPMISCCAPS_LINEPATTERNREP
                            // | D3DPMISCCAPS_MASKPLANES
                               | D3DPMISCCAPS_MASKZ;
 
     prim.dwRasterCaps         = D3DPRASTERCAPS_ANISOTROPY
-                              | D3DPRASTERCAPS_ANTIALIASEDGES // Technically not implemented in D3D9
+                           // | D3DPRASTERCAPS_ANTIALIASEDGES // Not implemented in D3D9
                            // | D3DPRASTERCAPS_ANTIALIASSORTDEPENDENT
                            // | D3DPRASTERCAPS_ANTIALIASSORTINDEPENDENT
                               | D3DPRASTERCAPS_DITHER
@@ -913,9 +967,9 @@ namespace dxvk {
                               | D3DPRASTERCAPS_FOGTABLE
                               | D3DPRASTERCAPS_FOGVERTEX
                               | D3DPRASTERCAPS_MIPMAPLODBIAS
-                           // | D3DPRASTERCAPS_PAT // Not implemented in D3D9
+                           // | D3DPRASTERCAPS_PAT
                            // | D3DPRASTERCAPS_ROP2
-                              | D3DPRASTERCAPS_STIPPLE // Technically not implemented
+                           // | D3DPRASTERCAPS_STIPPLE
                               | D3DPRASTERCAPS_SUBPIXEL
                            // | D3DPRASTERCAPS_SUBPIXELX
                            // | D3DPRASTERCAPS_TRANSLUCENTSORTINDEPENDENT
@@ -923,13 +977,12 @@ namespace dxvk {
                               | D3DPRASTERCAPS_WFOG
                            // | D3DPRASTERCAPS_XOR
                               | D3DPRASTERCAPS_ZBIAS
-                           // | D3DPRASTERCAPS_ZBUFFERLESSHSR // Easy footgun to not get a z-buffer
+                           // | D3DPRASTERCAPS_ZBUFFERLESSHSR
                               | D3DPRASTERCAPS_ZFOG
                               | D3DPRASTERCAPS_ZTEST;
 
     if (unlikely(options->emulateFSAA != FSAAEmulation::Disabled)) {
-      prim.dwRasterCaps |= D3DPRASTERCAPS_ANTIALIASSORTDEPENDENT
-                        |  D3DPRASTERCAPS_ANTIALIASSORTINDEPENDENT;
+      prim.dwRasterCaps |= D3DPRASTERCAPS_ANTIALIASSORTINDEPENDENT;
     }
 
     prim.dwZCmpCaps           = D3DPCMPCAPS_ALWAYS
@@ -985,14 +1038,11 @@ namespace dxvk {
                               | D3DPTEXTURECAPS_ALPHAPALETTE
                               | D3DPTEXTURECAPS_BORDER
                               | D3DPTEXTURECAPS_PERSPECTIVE
+                              | D3DPTEXTURECAPS_POW2 // Always reported on early D3D cards
+                              | D3DPTEXTURECAPS_NONPOW2CONDITIONAL // Reported only on later (D3D7/8) D3D cards
                            // | D3DPTEXTURECAPS_SQUAREONLY
                               | D3DPTEXTURECAPS_TEXREPEATNOTSCALEDBYSIZE
                               | D3DPTEXTURECAPS_TRANSPARENCY;
-
-    if (unlikely(options->forcePOW2Textures)) {
-      prim.dwTextureCaps |= D3DPTEXTURECAPS_NONPOW2CONDITIONAL
-                          | D3DPTEXTURECAPS_POW2;
-    }
 
     prim.dwTextureFilterCaps  = D3DPTFILTERCAPS_LINEAR
                               | D3DPTFILTERCAPS_LINEARMIPLINEAR
@@ -1026,8 +1076,8 @@ namespace dxvk {
                               | D3DPTADDRESSCAPS_MIRROR
                               | D3DPTADDRESSCAPS_WRAP;
 
-    prim.dwStippleWidth       = 32;
-    prim.dwStippleHeight      = 32;
+    prim.dwStippleWidth       = 0;
+    prim.dwStippleHeight      = 0;
 
     desc.dpcLineCaps          = prim;
     desc.dpcTriCaps           = prim;
@@ -1096,7 +1146,21 @@ namespace dxvk {
     return desc;
   }
 
-  inline D3DDEVICEDESC7 GetD3D7Caps(const IID rclsid, const D3DOptions* options) {
+  inline void ApplyD3D6DeviceCaps(D3DDEVICEDESC* desc, const IID rclsid) {
+    if (rclsid == IID_IDirect3DHALDevice) {
+      desc->dwDevCaps |= D3DDEVCAPS_HWRASTERIZATION
+                       | D3DDEVCAPS_HWTRANSFORMANDLIGHT
+                       | D3DDEVCAPS_DRAWPRIMITIVES2
+                       | D3DDEVCAPS_DRAWPRIMITIVES2EX;
+    } else {
+      desc->dwDevCaps &= ~D3DDEVCAPS_HWRASTERIZATION
+                       & ~D3DDEVCAPS_HWTRANSFORMANDLIGHT
+                       & ~D3DDEVCAPS_DRAWPRIMITIVES2
+                       & ~D3DDEVCAPS_DRAWPRIMITIVES2EX;
+    }
+  }
+
+  inline D3DDEVICEDESC7 GetD3D7BaseCaps(const D3DOptions* options) {
     D3DDEVICEDESC7 desc7;
 
     desc7.dwDevCaps = D3DDEVCAPS_CANBLTSYSTONONLOCAL
@@ -1113,8 +1177,7 @@ namespace dxvk {
                  // | D3DDEVCAPS_SORTDECREASINGZ
                  // | D3DDEVCAPS_SORTEXACT
                  // | D3DDEVCAPS_SORTINCREASINGZ
-                 // | D3DDEVCAPS_STRIDEDVERTICES // Mentioned in the docs, but apparently is a ghost
-                 // | D3DDEVCAPS_TEXTURENONLOCALVIDMEM // Exposed though a config option
+                 // | D3DDEVCAPS_TEXTURENONLOCALVIDMEM // Exposed through a config option
                  // | D3DDEVCAPS_TEXTURESYSTEMMEMORY
                     | D3DDEVCAPS_TEXTUREVIDEOMEMORY
                     | D3DDEVCAPS_TLVERTEXSYSTEMMEMORY
@@ -1125,18 +1188,6 @@ namespace dxvk {
       desc7.dwDevCaps |= D3DDEVCAPS_TEXTURENONLOCALVIDMEM;
     }
 
-    if (rclsid == IID_IDirect3DTnLHalDevice) {
-      desc7.dwDevCaps |= D3DDEVCAPS_HWRASTERIZATION
-                       | D3DDEVCAPS_HWTRANSFORMANDLIGHT
-                       | D3DDEVCAPS_DRAWPRIMITIVES2
-                       | D3DDEVCAPS_DRAWPRIMITIVES2EX;
-    }
-    else if (rclsid == IID_IDirect3DHALDevice || rclsid == IID_WineD3DDevice) {
-      desc7.dwDevCaps |= D3DDEVCAPS_HWRASTERIZATION
-                       | D3DDEVCAPS_DRAWPRIMITIVES2
-                       | D3DDEVCAPS_DRAWPRIMITIVES2EX;
-    }
-
     D3DPRIMCAPS prim;
     prim.dwSize = sizeof(D3DPRIMCAPS);
 
@@ -1144,12 +1195,12 @@ namespace dxvk {
                               | D3DPMISCCAPS_CULLCW
                               | D3DPMISCCAPS_CULLNONE
                            // | D3DPMISCCAPS_CONFORMANT
-                           // | D3DPMISCCAPS_LINEPATTERNREP // Not implemented in D3D9
+                           // | D3DPMISCCAPS_LINEPATTERNREP
                            // | D3DPMISCCAPS_MASKPLANES
                               | D3DPMISCCAPS_MASKZ;
 
     prim.dwRasterCaps         = D3DPRASTERCAPS_ANISOTROPY
-                              | D3DPRASTERCAPS_ANTIALIASEDGES // Technically not implemented in D3D9
+                           // | D3DPRASTERCAPS_ANTIALIASEDGES // Not implemented in D3D9
                            // | D3DPRASTERCAPS_ANTIALIASSORTDEPENDENT
                            // | D3DPRASTERCAPS_ANTIALIASSORTINDEPENDENT
                               | D3DPRASTERCAPS_DITHER
@@ -1157,9 +1208,9 @@ namespace dxvk {
                               | D3DPRASTERCAPS_FOGTABLE
                               | D3DPRASTERCAPS_FOGVERTEX
                               | D3DPRASTERCAPS_MIPMAPLODBIAS
-                           // | D3DPRASTERCAPS_PAT // Not implemented in D3D9
+                           // | D3DPRASTERCAPS_PAT
                            // | D3DPRASTERCAPS_ROP2
-                              | D3DPRASTERCAPS_STIPPLE // Technically not implemented
+                           // | D3DPRASTERCAPS_STIPPLE
                               | D3DPRASTERCAPS_SUBPIXEL
                            // | D3DPRASTERCAPS_SUBPIXELX
                            // | D3DPRASTERCAPS_TRANSLUCENTSORTINDEPENDENT
@@ -1167,13 +1218,12 @@ namespace dxvk {
                               | D3DPRASTERCAPS_WFOG
                            // | D3DPRASTERCAPS_XOR
                               | D3DPRASTERCAPS_ZBIAS
-                           // | D3DPRASTERCAPS_ZBUFFERLESSHSR // Easy footgun to not get a z-buffer
+                           // | D3DPRASTERCAPS_ZBUFFERLESSHSR
                               | D3DPRASTERCAPS_ZFOG
                               | D3DPRASTERCAPS_ZTEST;
 
     if (unlikely(options->emulateFSAA != FSAAEmulation::Disabled)) {
-      prim.dwRasterCaps |= D3DPRASTERCAPS_ANTIALIASSORTDEPENDENT
-                        |  D3DPRASTERCAPS_ANTIALIASSORTINDEPENDENT;
+      prim.dwRasterCaps |= D3DPRASTERCAPS_ANTIALIASSORTINDEPENDENT;
     }
 
     prim.dwZCmpCaps           = D3DPCMPCAPS_ALWAYS
@@ -1232,14 +1282,11 @@ namespace dxvk {
                               | D3DPTEXTURECAPS_CUBEMAP
                               | D3DPTEXTURECAPS_PERSPECTIVE
                               | D3DPTEXTURECAPS_PROJECTED
+                              | D3DPTEXTURECAPS_POW2 // Always reported on early D3D cards
+                              | D3DPTEXTURECAPS_NONPOW2CONDITIONAL // Reported only on later (D3D7/8) D3D cards
                            // | D3DPTEXTURECAPS_SQUAREONLY
                               | D3DPTEXTURECAPS_TEXREPEATNOTSCALEDBYSIZE
                               | D3DPTEXTURECAPS_TRANSPARENCY;
-
-    if (unlikely(options->forcePOW2Textures)) {
-      prim.dwTextureCaps |= D3DPTEXTURECAPS_NONPOW2CONDITIONAL
-                          | D3DPTEXTURECAPS_POW2;
-    }
 
     prim.dwTextureFilterCaps  = D3DPTFILTERCAPS_LINEAR
                               | D3DPTFILTERCAPS_LINEARMIPLINEAR
@@ -1275,8 +1322,8 @@ namespace dxvk {
                               | D3DPTADDRESSCAPS_MIRROR
                               | D3DPTADDRESSCAPS_WRAP;
 
-    prim.dwStippleWidth       = 32;
-    prim.dwStippleHeight      = 32;
+    prim.dwStippleWidth       = 0;
+    prim.dwStippleHeight      = 0;
 
     desc7.dpcLineCaps         = prim;
     desc7.dpcTriCaps          = prim;
@@ -1338,7 +1385,7 @@ namespace dxvk {
     desc7.dwMaxActiveLights        = ddrawCaps::MaxEnabledLights;
     desc7.dvMaxVertexW             = 1e10f;
 
-    desc7.deviceGUID               = rclsid;
+    desc7.deviceGUID               = GUID_NULL;
 
     desc7.wMaxUserClipPlanes       = ddrawCaps::MaxClipPlanes;
     desc7.wMaxVertexBlendMatrices  = 4;
@@ -1358,333 +1405,24 @@ namespace dxvk {
     return desc7;
   }
 
-  inline bool IsValidD3D3RenderStateType(D3DRENDERSTATETYPE rs) {
-    return rs == D3DRENDERSTATE_TEXTUREHANDLE
-        || rs == D3DRENDERSTATE_ANTIALIAS
-        || rs == D3DRENDERSTATE_TEXTUREADDRESS
-        || rs == D3DRENDERSTATE_TEXTUREPERSPECTIVE
-        || rs == D3DRENDERSTATE_WRAPU
-        || rs == D3DRENDERSTATE_WRAPV
-        || rs == D3DRENDERSTATE_ZENABLE
-        || rs == D3DRENDERSTATE_FILLMODE
-        || rs == D3DRENDERSTATE_SHADEMODE
-        || rs == D3DRENDERSTATE_LINEPATTERN
-        || rs == D3DRENDERSTATE_MONOENABLE
-        || rs == D3DRENDERSTATE_ROP2
-        || rs == D3DRENDERSTATE_PLANEMASK
-        || rs == D3DRENDERSTATE_ZWRITEENABLE
-        || rs == D3DRENDERSTATE_ALPHATESTENABLE
-        || rs == D3DRENDERSTATE_LASTPIXEL
-        || rs == D3DRENDERSTATE_TEXTUREMAG
-        || rs == D3DRENDERSTATE_TEXTUREMIN
-        || rs == D3DRENDERSTATE_SRCBLEND
-        || rs == D3DRENDERSTATE_DESTBLEND
-        || rs == D3DRENDERSTATE_TEXTUREMAPBLEND
-        || rs == D3DRENDERSTATE_CULLMODE
-        || rs == D3DRENDERSTATE_ZFUNC
-        || rs == D3DRENDERSTATE_ALPHAREF
-        || rs == D3DRENDERSTATE_ALPHAFUNC
-        || rs == D3DRENDERSTATE_DITHERENABLE
-        || rs == D3DRENDERSTATE_BLENDENABLE // The actual D3DRENDERSTATE_ALPHABLENDENABLE
-        || rs == D3DRENDERSTATE_FOGENABLE
-        || rs == D3DRENDERSTATE_SPECULARENABLE
-        || rs == D3DRENDERSTATE_ZVISIBLE
-        || rs == D3DRENDERSTATE_SUBPIXEL
-        || rs == D3DRENDERSTATE_SUBPIXELX
-        || rs == D3DRENDERSTATE_STIPPLEDALPHA
-        || rs == D3DRENDERSTATE_FOGCOLOR
-        || rs == D3DRENDERSTATE_FOGTABLEMODE
-        || rs == D3DRENDERSTATE_FOGTABLESTART
-        || rs == D3DRENDERSTATE_FOGTABLEEND
-        || rs == D3DRENDERSTATE_FOGTABLEDENSITY
-        || rs == D3DRENDERSTATE_STIPPLEENABLE
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN00
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN01
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN02
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN03
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN04
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN05
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN06
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN07
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN08
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN09
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN10
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN11
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN12
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN13
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN14
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN15
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN16
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN17
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN18
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN19
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN20
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN21
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN22
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN23
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN24
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN25
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN26
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN27
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN28
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN29
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN30
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN31;
-  }
+  inline void ApplyD3D7DeviceCaps(D3DDEVICEDESC7* desc7, const IID rclsid) {
+    desc7->deviceGUID = rclsid;
 
-  inline bool IsValidD3D5RenderStateType(D3DRENDERSTATETYPE rs) {
-    return rs == D3DRENDERSTATE_TEXTUREHANDLE
-        || rs == D3DRENDERSTATE_ANTIALIAS
-        || rs == D3DRENDERSTATE_TEXTUREADDRESS
-        || rs == D3DRENDERSTATE_TEXTUREPERSPECTIVE
-        || rs == D3DRENDERSTATE_WRAPU
-        || rs == D3DRENDERSTATE_WRAPV
-        || rs == D3DRENDERSTATE_ZENABLE
-        || rs == D3DRENDERSTATE_FILLMODE
-        || rs == D3DRENDERSTATE_SHADEMODE
-        || rs == D3DRENDERSTATE_LINEPATTERN
-        || rs == D3DRENDERSTATE_MONOENABLE
-        || rs == D3DRENDERSTATE_ROP2
-        || rs == D3DRENDERSTATE_PLANEMASK
-        || rs == D3DRENDERSTATE_ZWRITEENABLE
-        || rs == D3DRENDERSTATE_ALPHATESTENABLE
-        || rs == D3DRENDERSTATE_LASTPIXEL
-        || rs == D3DRENDERSTATE_TEXTUREMAG
-        || rs == D3DRENDERSTATE_TEXTUREMIN
-        || rs == D3DRENDERSTATE_SRCBLEND
-        || rs == D3DRENDERSTATE_DESTBLEND
-        || rs == D3DRENDERSTATE_TEXTUREMAPBLEND
-        || rs == D3DRENDERSTATE_CULLMODE
-        || rs == D3DRENDERSTATE_ZFUNC
-        || rs == D3DRENDERSTATE_ALPHAREF
-        || rs == D3DRENDERSTATE_ALPHAFUNC
-        || rs == D3DRENDERSTATE_DITHERENABLE
-        || rs == D3DRENDERSTATE_BLENDENABLE // The actual D3DRENDERSTATE_ALPHABLENDENABLE
-        || rs == D3DRENDERSTATE_FOGENABLE
-        || rs == D3DRENDERSTATE_SPECULARENABLE
-        || rs == D3DRENDERSTATE_ZVISIBLE
-        || rs == D3DRENDERSTATE_SUBPIXEL
-        || rs == D3DRENDERSTATE_SUBPIXELX
-        || rs == D3DRENDERSTATE_STIPPLEDALPHA
-        || rs == D3DRENDERSTATE_FOGCOLOR
-        || rs == D3DRENDERSTATE_FOGTABLEMODE
-        || rs == D3DRENDERSTATE_FOGTABLESTART
-        || rs == D3DRENDERSTATE_FOGTABLEEND
-        || rs == D3DRENDERSTATE_FOGTABLEDENSITY
-        || rs == D3DRENDERSTATE_STIPPLEENABLE
-        || rs == D3DRENDERSTATE_EDGEANTIALIAS
-        || rs == D3DRENDERSTATE_COLORKEYENABLE
-        || rs == D3DRENDERSTATE_ALPHABLENDENABLE_OLD // Deprecated in D3D6
-        || rs == D3DRENDERSTATE_BORDERCOLOR
-        || rs == D3DRENDERSTATE_TEXTUREADDRESSU
-        || rs == D3DRENDERSTATE_TEXTUREADDRESSV
-        || rs == D3DRENDERSTATE_MIPMAPLODBIAS
-        || rs == D3DRENDERSTATE_ZBIAS
-        || rs == D3DRENDERSTATE_RANGEFOGENABLE
-        || rs == D3DRENDERSTATE_ANISOTROPY
-        || rs == D3DRENDERSTATE_FLUSHBATCH // Not in the docs, but valid in D3D5
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN00
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN01
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN02
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN03
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN04
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN05
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN06
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN07
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN08
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN09
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN10
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN11
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN12
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN13
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN14
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN15
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN16
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN17
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN18
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN19
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN20
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN21
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN22
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN23
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN24
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN25
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN26
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN27
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN28
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN29
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN30
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN31;
-  }
-
-  inline bool IsValidD3D6RenderStateType(D3DRENDERSTATETYPE rs) {
-    return rs == D3DRENDERSTATE_TEXTUREHANDLE
-        || rs == D3DRENDERSTATE_ANTIALIAS
-        || rs == D3DRENDERSTATE_TEXTUREADDRESS
-        || rs == D3DRENDERSTATE_TEXTUREPERSPECTIVE
-        || rs == D3DRENDERSTATE_WRAPU
-        || rs == D3DRENDERSTATE_WRAPV
-        || rs == D3DRENDERSTATE_ZENABLE
-        || rs == D3DRENDERSTATE_FILLMODE
-        || rs == D3DRENDERSTATE_SHADEMODE
-        || rs == D3DRENDERSTATE_LINEPATTERN
-        || rs == D3DRENDERSTATE_MONOENABLE
-        || rs == D3DRENDERSTATE_ROP2
-        || rs == D3DRENDERSTATE_PLANEMASK
-        || rs == D3DRENDERSTATE_ZWRITEENABLE
-        || rs == D3DRENDERSTATE_ALPHATESTENABLE
-        || rs == D3DRENDERSTATE_LASTPIXEL
-        || rs == D3DRENDERSTATE_TEXTUREMAG
-        || rs == D3DRENDERSTATE_TEXTUREMIN
-        || rs == D3DRENDERSTATE_SRCBLEND
-        || rs == D3DRENDERSTATE_DESTBLEND
-        || rs == D3DRENDERSTATE_TEXTUREMAPBLEND
-        || rs == D3DRENDERSTATE_CULLMODE
-        || rs == D3DRENDERSTATE_ZFUNC
-        || rs == D3DRENDERSTATE_ALPHAREF
-        || rs == D3DRENDERSTATE_ALPHAFUNC
-        || rs == D3DRENDERSTATE_DITHERENABLE
-        || rs == D3DRENDERSTATE_ALPHABLENDENABLE
-        || rs == D3DRENDERSTATE_FOGENABLE
-        || rs == D3DRENDERSTATE_SPECULARENABLE
-        || rs == D3DRENDERSTATE_ZVISIBLE
-        || rs == D3DRENDERSTATE_SUBPIXEL
-        || rs == D3DRENDERSTATE_SUBPIXELX
-        || rs == D3DRENDERSTATE_STIPPLEDALPHA
-        || rs == D3DRENDERSTATE_FOGCOLOR
-        || rs == D3DRENDERSTATE_FOGTABLEMODE
-        || rs == D3DRENDERSTATE_FOGTABLESTART
-        || rs == D3DRENDERSTATE_FOGTABLEEND
-        || rs == D3DRENDERSTATE_FOGTABLEDENSITY
-        || rs == D3DRENDERSTATE_STIPPLEENABLE
-        || rs == D3DRENDERSTATE_EDGEANTIALIAS
-        || rs == D3DRENDERSTATE_COLORKEYENABLE
-        || rs == D3DRENDERSTATE_BORDERCOLOR
-        || rs == D3DRENDERSTATE_TEXTUREADDRESSU
-        || rs == D3DRENDERSTATE_TEXTUREADDRESSV
-        || rs == D3DRENDERSTATE_MIPMAPLODBIAS
-        || rs == D3DRENDERSTATE_ZBIAS
-        || rs == D3DRENDERSTATE_RANGEFOGENABLE
-        || rs == D3DRENDERSTATE_ANISOTROPY
-        || rs == D3DRENDERSTATE_FLUSHBATCH
-        || rs == D3DRENDERSTATE_TRANSLUCENTSORTINDEPENDENT
-        || rs == D3DRENDERSTATE_STENCILENABLE
-        || rs == D3DRENDERSTATE_STENCILFAIL
-        || rs == D3DRENDERSTATE_STENCILZFAIL
-        || rs == D3DRENDERSTATE_STENCILPASS
-        || rs == D3DRENDERSTATE_STENCILFUNC
-        || rs == D3DRENDERSTATE_STENCILREF
-        || rs == D3DRENDERSTATE_STENCILMASK
-        || rs == D3DRENDERSTATE_STENCILWRITEMASK
-        || rs == D3DRENDERSTATE_TEXTUREFACTOR
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN00
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN01
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN02
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN03
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN04
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN05
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN06
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN07
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN08
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN09
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN10
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN11
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN12
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN13
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN14
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN15
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN16
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN17
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN18
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN19
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN20
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN21
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN22
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN23
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN24
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN25
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN26
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN27
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN28
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN29
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN30
-        || rs == D3DRENDERSTATE_STIPPLEPATTERN31
-        || rs == D3DRENDERSTATE_WRAP0
-        || rs == D3DRENDERSTATE_WRAP1
-        || rs == D3DRENDERSTATE_WRAP2
-        || rs == D3DRENDERSTATE_WRAP3
-        || rs == D3DRENDERSTATE_WRAP4
-        || rs == D3DRENDERSTATE_WRAP5
-        || rs == D3DRENDERSTATE_WRAP6
-        || rs == D3DRENDERSTATE_WRAP7;
-  }
-
-  inline bool IsValidD3D7RenderStateType(D3DRENDERSTATETYPE rs) {
-    return rs == D3DRENDERSTATE_ANTIALIAS
-        || rs == D3DRENDERSTATE_TEXTUREPERSPECTIVE
-        || rs == D3DRENDERSTATE_ZENABLE
-        || rs == D3DRENDERSTATE_FILLMODE
-        || rs == D3DRENDERSTATE_SHADEMODE
-        || rs == D3DRENDERSTATE_LINEPATTERN
-        || rs == D3DRENDERSTATE_ZWRITEENABLE
-        || rs == D3DRENDERSTATE_ALPHATESTENABLE
-        || rs == D3DRENDERSTATE_LASTPIXEL
-        || rs == D3DRENDERSTATE_SRCBLEND
-        || rs == D3DRENDERSTATE_DESTBLEND
-        || rs == D3DRENDERSTATE_CULLMODE
-        || rs == D3DRENDERSTATE_ZFUNC
-        || rs == D3DRENDERSTATE_ALPHAREF
-        || rs == D3DRENDERSTATE_ALPHAFUNC
-        || rs == D3DRENDERSTATE_DITHERENABLE
-        || rs == D3DRENDERSTATE_ALPHABLENDENABLE
-        || rs == D3DRENDERSTATE_FOGENABLE
-        || rs == D3DRENDERSTATE_SPECULARENABLE
-        || rs == D3DRENDERSTATE_ZVISIBLE
-        || rs == D3DRENDERSTATE_STIPPLEDALPHA
-        || rs == D3DRENDERSTATE_FOGCOLOR
-        || rs == D3DRENDERSTATE_FOGTABLEMODE
-        || rs == D3DRENDERSTATE_FOGTABLESTART
-        || rs == D3DRENDERSTATE_FOGTABLEEND
-        || rs == D3DRENDERSTATE_FOGTABLEDENSITY
-        || rs == D3DRENDERSTATE_FOGSTART
-        || rs == D3DRENDERSTATE_FOGEND
-        || rs == D3DRENDERSTATE_FOGDENSITY
-        || rs == D3DRENDERSTATE_EDGEANTIALIAS
-        || rs == D3DRENDERSTATE_COLORKEYENABLE
-        || rs == D3DRENDERSTATE_ZBIAS
-        || rs == D3DRENDERSTATE_RANGEFOGENABLE
-        || rs == D3DRENDERSTATE_STENCILENABLE
-        || rs == D3DRENDERSTATE_STENCILFAIL
-        || rs == D3DRENDERSTATE_STENCILZFAIL
-        || rs == D3DRENDERSTATE_STENCILPASS
-        || rs == D3DRENDERSTATE_STENCILFUNC
-        || rs == D3DRENDERSTATE_STENCILREF
-        || rs == D3DRENDERSTATE_STENCILMASK
-        || rs == D3DRENDERSTATE_STENCILWRITEMASK
-        || rs == D3DRENDERSTATE_TEXTUREFACTOR
-        || rs == D3DRENDERSTATE_WRAP0
-        || rs == D3DRENDERSTATE_WRAP1
-        || rs == D3DRENDERSTATE_WRAP2
-        || rs == D3DRENDERSTATE_WRAP3
-        || rs == D3DRENDERSTATE_WRAP4
-        || rs == D3DRENDERSTATE_WRAP5
-        || rs == D3DRENDERSTATE_WRAP6
-        || rs == D3DRENDERSTATE_WRAP7
-        || rs == D3DRENDERSTATE_CLIPPING
-        || rs == D3DRENDERSTATE_LIGHTING
-        || rs == D3DRENDERSTATE_EXTENTS
-        || rs == D3DRENDERSTATE_AMBIENT
-        || rs == D3DRENDERSTATE_FOGVERTEXMODE
-        || rs == D3DRENDERSTATE_COLORVERTEX
-        || rs == D3DRENDERSTATE_LOCALVIEWER
-        || rs == D3DRENDERSTATE_NORMALIZENORMALS
-        || rs == D3DRENDERSTATE_COLORKEYBLENDENABLE
-        || rs == D3DRENDERSTATE_DIFFUSEMATERIALSOURCE
-        || rs == D3DRENDERSTATE_SPECULARMATERIALSOURCE
-        || rs == D3DRENDERSTATE_AMBIENTMATERIALSOURCE
-        || rs == D3DRENDERSTATE_EMISSIVEMATERIALSOURCE
-        || rs == D3DRENDERSTATE_VERTEXBLEND
-        || rs == D3DRENDERSTATE_CLIPPLANEENABLE;
+    if (rclsid == IID_IDirect3DTnLHalDevice) {
+      desc7->dwDevCaps |= D3DDEVCAPS_HWRASTERIZATION
+                        | D3DDEVCAPS_HWTRANSFORMANDLIGHT
+                        | D3DDEVCAPS_DRAWPRIMITIVES2
+                        | D3DDEVCAPS_DRAWPRIMITIVES2EX;
+    } else if (rclsid == IID_IDirect3DHALDevice) {
+      desc7->dwDevCaps |= D3DDEVCAPS_HWRASTERIZATION
+                        | D3DDEVCAPS_DRAWPRIMITIVES2
+                        | D3DDEVCAPS_DRAWPRIMITIVES2EX;
+    } else {
+      desc7->dwDevCaps &= ~D3DDEVCAPS_HWRASTERIZATION
+                        & ~D3DDEVCAPS_HWTRANSFORMANDLIGHT
+                        & ~D3DDEVCAPS_DRAWPRIMITIVES2
+                        & ~D3DDEVCAPS_DRAWPRIMITIVES2EX;
+    }
   }
 
   inline Matrix4 MatrixD3DTo4(const D3DMATRIX* m) {

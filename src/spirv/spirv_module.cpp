@@ -882,16 +882,7 @@ namespace dxvk {
   uint32_t SpirvModule::newVar(
           uint32_t                pointerType,
           spv::StorageClass       storageClass) {
-    uint32_t resultId = this->allocateId();
-
-    auto& code = storageClass != spv::StorageClassFunction
-      ? m_variables : m_code;
-
-    code.putIns  (spv::OpVariable, 4);
-    code.putWord (pointerType);
-    code.putWord (resultId);
-    code.putWord (storageClass);
-    return resultId;
+    return newVarInit(pointerType, storageClass, 0u);
   }
 
 
@@ -904,11 +895,14 @@ namespace dxvk {
     auto& code = storageClass != spv::StorageClassFunction
       ? m_variables : m_code;
 
-    code.putIns  (spv::OpVariable, 5);
+    code.putIns  (spv::OpVariable, initialValue ? 5 : 4);
     code.putWord (pointerType);
     code.putWord (resultId);
     code.putWord (storageClass);
-    code.putWord (initialValue);
+
+    if (initialValue)
+      code.putWord (initialValue);
+
     return resultId;
   }
 
@@ -2283,6 +2277,25 @@ namespace dxvk {
     m_code.putWord(resultId);
     m_code.putWord(m_instExtGlsl450);
     m_code.putWord(GLSLstd450NClamp);
+    m_code.putWord(x);
+    m_code.putWord(minVal);
+    m_code.putWord(maxVal);
+    return resultId;
+  }
+
+
+  uint32_t SpirvModule::opSClamp(
+          uint32_t                resultType,
+          uint32_t                x,
+          uint32_t                minVal,
+          uint32_t                maxVal) {
+    uint32_t resultId = this->allocateId();
+
+    m_code.putIns (spv::OpExtInst, 8);
+    m_code.putWord(resultType);
+    m_code.putWord(resultId);
+    m_code.putWord(m_instExtGlsl450);
+    m_code.putWord(GLSLstd450SClamp);
     m_code.putWord(x);
     m_code.putWord(minVal);
     m_code.putWord(maxVal);

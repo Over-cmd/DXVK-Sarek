@@ -60,6 +60,8 @@ dxvk_shaders = files([
 
 dxvk_src = [
   'dxvk_adapter.cpp',
+  'dxvk_allocator.cpp',
+  'dxvk_asynccompiler.cpp',
   'dxvk_barrier.cpp',
   'dxvk_buffer.cpp',
   'dxvk_cmdlist.cpp',
@@ -74,6 +76,9 @@ dxvk_src = [
   'dxvk_fence.cpp',
   'dxvk_format.cpp',
   'dxvk_framebuffer.cpp',
+
+  'framepacer/dxvk_framepacer.cpp',
+
   'dxvk_gpu_event.cpp',
   'dxvk_gpu_query.cpp',
   'dxvk_graphics.cpp',
@@ -120,7 +125,7 @@ dxvk_src = [
 thread_dep = dependency('threads')
 
 dxvk_lib = static_library('dxvk', dxvk_src, glsl_generator.process(dxvk_shaders), dxvk_version,
-  link_with           : [ util_lib, spirv_lib ],
+  link_with           : [ util_lib, spirv_lib, wsi_lib ],
   dependencies        : [ thread_dep, vkcommon_dep ],
   include_directories : [ dxvk_include_path ],
 )

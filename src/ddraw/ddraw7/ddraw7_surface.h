@@ -126,8 +126,6 @@ namespace dxvk {
 
     HRESULT STDMETHODCALLTYPE GetLOD(LPDWORD lod);
 
-    IDirectDrawSurface7* GetShadowOrProxied();
-
     HRESULT InitializeD3D9RenderTarget();
 
     HRESULT InitializeD3D9DepthStencil();
@@ -142,6 +140,15 @@ namespace dxvk {
 
     DDraw7Surface* GetShadowSurface() const {
       return m_shadowSurf.ptr();
+    }
+
+    IDirectDrawSurface7* GetShadowOrProxied() {
+      d3d9::IDirect3DDevice9* d3d9Device = m_commonSurf->GetRefreshedD3D9Device();
+
+      if (unlikely(m_shadowSurf != nullptr && d3d9Device != nullptr))
+        return m_shadowSurf->GetProxied();
+
+      return m_proxy.ptr();
     }
 
     DDrawCommonSurface* GetCommonSurface() const {
@@ -177,27 +184,20 @@ namespace dxvk {
       return m_depthStencil.ptr();
     }
 
-    void ClearAttachedDepthStencil() {
-      m_depthStencil = nullptr;
+    void SetParentSurface(DDraw7Surface* surface) {
+      m_parentSurf = surface;
+
+      if (m_parentSurf != nullptr)
+        m_commonSurf->SetIsAttached(true);
+      else
+        m_commonSurf->SetIsAttached(false);
     }
 
     DDraw7Surface* GetParentSurface() const {
       return m_parentSurf;
     }
 
-    void SetParentSurface(DDraw7Surface* surface) {
-      m_parentSurf = surface;
-      m_commonSurf->SetIsAttached(true);
-    }
-
-    void ClearParentSurface() {
-      m_parentSurf = nullptr;
-      m_commonSurf->SetIsAttached(false);
-    }
-
   private:
-
-    inline void UpdateMipMapCount();
 
     inline void InitializeAndAttachCubeFace(
         IDirectDrawSurface7* surf,
@@ -208,16 +208,17 @@ namespace dxvk {
 
     inline HRESULT UploadSurfaceData();
 
-    bool                                m_isChildObject   = false;
+    bool                                m_isChildObject = false;
+    std::atomic<bool>                   m_readOnlyLock  = false;
 
     Com<DDrawCommonSurface>             m_commonSurf;
-    DDrawCommonInterface*               m_commonIntf      = nullptr;
+    DDrawCommonInterface*               m_commonIntf    = nullptr;
 
-    DDraw7Surface*                      m_parentSurf      = nullptr;
+    DDraw7Surface*                      m_parentSurf    = nullptr;
 
     std::array<IDirectDrawSurface7*, 6> m_cubeMapSurfaces;
 
-    DDraw7Surface*                      m_nextFlippable   = nullptr;
+    DDraw7Surface*                      m_nextFlippable = nullptr;
 
     // Offscreen plain surface we use to mask unwanted DDraw interactions, such
     // as forced swapchain presents caused by blits/locks on primary surfaces
@@ -232,9 +233,6 @@ namespace dxvk {
     // They are implemented with linked list, so for example only one mip level
     // will be held in a parent texture, and the next mip level will be held in the previous mip.
     std::unordered_map<IDirectDrawSurface7*, Com<DDraw7Surface, false>> m_attachedSurfaces;
-
-    uint32_t                            m_surfCount       = 0;
-    static std::atomic<uint32_t>        s_surfCount;
 
   };
 

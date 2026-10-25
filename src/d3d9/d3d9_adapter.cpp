@@ -16,14 +16,17 @@ namespace dxvk {
 
   const char* GetDriverDLL(DxvkGpuVendor vendor) {
     switch (vendor) {
-      default:
       case DxvkGpuVendor::Nvidia: return "nvd3dum.dll";
 
 #if defined(__x86_64__) || defined(_M_X64)
+      default:
       case DxvkGpuVendor::Amd:    return "aticfx64.dll";
+
       case DxvkGpuVendor::Intel:  return "igdumd64.dll";
 #else
+      default:
       case DxvkGpuVendor::Amd:    return "aticfx32.dll";
+
       case DxvkGpuVendor::Intel:  return "igdumd32.dll";
 #endif
     }
@@ -137,12 +140,14 @@ namespace dxvk {
     copyToStringArray(pIdentifier->DeviceName,  device.DeviceName); // The GDI device name. Not the actual device name.
     copyToStringArray(pIdentifier->Driver,      driver);            // This is the driver's dll.
 
+    const bool isExtended = m_parent->IsD3DCompatibile(D3DCompatibility::D3D9Ex);
+
     pIdentifier->DeviceIdentifier       = guid;
     pIdentifier->DeviceId               = deviceId;
     pIdentifier->VendorId               = vendorId;
     pIdentifier->Revision               = 0;
     pIdentifier->SubSysId               = 0;
-    pIdentifier->WHQLLevel              = m_parent->IsExtended() ? 1 : 0; // This doesn't check with the driver on Direct3D9Ex and is always 1.
+    pIdentifier->WHQLLevel              = isExtended ? 1 : 0; // This doesn't check with the driver on Direct3D9Ex and is always 1.
     pIdentifier->DriverVersion.QuadPart = INT64_MAX;
 
     return D3D_OK;
@@ -170,6 +175,12 @@ namespace dxvk {
           DWORD           Usage,
           D3DRESOURCETYPE RType,
           D3D9Format      CheckFormat) {
+    if (unlikely(AdapterFormat == D3D9Format::Unknown))
+      return D3DERR_INVALIDCALL;
+
+    if (unlikely(RType == D3DRTYPE_VERTEXBUFFER || RType == D3DRTYPE_INDEXBUFFER))
+      return D3DERR_INVALIDCALL;
+
     if (!IsSupportedAdapterFormat(AdapterFormat))
       return D3DERR_NOTAVAILABLE;
 
@@ -208,10 +219,8 @@ namespace dxvk {
         : D3DERR_NOTAVAILABLE;
 
     // I really don't want to support this...
-    if (dmap) {
-      Logger::warn("D3D9Adapter::CheckDeviceFormat: D3DUSAGE_DMAP is unsupported");
+    if (dmap)
       return D3DERR_NOTAVAILABLE;
-    }
 
     auto mapping = m_d3d9Formats.GetFormatMapping(CheckFormat);
     if (mapping.FormatColor == VK_FORMAT_UNDEFINED)
@@ -223,9 +232,6 @@ namespace dxvk {
     if (RType == D3DRTYPE_CUBETEXTURE && mapping.Aspect != VK_IMAGE_ASPECT_COLOR_BIT
      && !m_parent->GetOptions().supportCubeDepthFormats)
       return D3DERR_NOTAVAILABLE;
-
-    if (RType == D3DRTYPE_VERTEXBUFFER || RType == D3DRTYPE_INDEXBUFFER)
-      return D3D_OK;
 
     // Let's actually ask Vulkan now that we got some quirks out the way!
     return CheckDeviceVkFormat(mapping.FormatColor, Usage, RType);
@@ -274,9 +280,8 @@ namespace dxvk {
     // Therefore...
     VkSampleCountFlags sampleFlags = VkSampleCountFlags(sampleCount);
 
-    auto availableFlags = !IsDepthFormat(SurfaceFormat)
-      ? m_adapter->deviceProperties().limits.framebufferColorSampleCounts
-      : m_adapter->deviceProperties().limits.framebufferDepthSampleCounts;
+    auto availableFlags = m_adapter->deviceProperties().limits.framebufferColorSampleCounts
+                        & m_adapter->deviceProperties().limits.framebufferDepthSampleCounts;
 
     if (!(availableFlags & sampleFlags))
       return D3DERR_NOTAVAILABLE;
@@ -300,11 +305,15 @@ namespace dxvk {
     if (!IsDepthFormat(DepthStencilFormat))
       return D3DERR_NOTAVAILABLE;
 
+    auto dsfMapping = GetFormatMapping(DepthStencilFormat);
+    if (dsfMapping.FormatColor == VK_FORMAT_UNDEFINED)
+      return D3DERR_NOTAVAILABLE;
+
     if (RenderTargetFormat == dxvk::D3D9Format::NULL_FORMAT)
       return D3D_OK;
 
-    auto mapping = ConvertFormatUnfixed(RenderTargetFormat);
-    if (mapping.FormatColor == VK_FORMAT_UNDEFINED)
+    auto rtfMapping = GetFormatMapping(RenderTargetFormat);
+    if (rtfMapping.FormatColor == VK_FORMAT_UNDEFINED)
       return D3DERR_NOTAVAILABLE;
 
     return D3D_OK;
@@ -342,12 +351,21 @@ namespace dxvk {
           D3DCAPS9*  pCaps) {
     using namespace dxvk::caps;
 
-    if (pCaps == nullptr)
+    if (unlikely(pCaps == nullptr))
       return D3DERR_INVALIDCALL;
+
+    const bool isD3D8Compatible = m_parent->IsD3DCompatibile(D3DCompatibility::D3D8);
+
+    if (unlikely(DeviceType == D3DDEVTYPE_SW)) {
+      if (isD3D8Compatible)
+        return D3DERR_INVALIDCALL;
+      else
+        return D3DERR_NOTAVAILABLE;
+    }
 
     auto& options = m_parent->GetOptions();
 
-    const uint32_t maxShaderModel = m_parent->IsD3D8Compatible() ? std::min(1u, options.shaderModel) : options.shaderModel;
+    const uint32_t maxShaderModel = isD3D8Compatible ? std::min(1u, options.shaderModel) : options.shaderModel;
 
     // TODO: Actually care about what the adapter supports here.
     // ^ For Intel and older cards most likely here.
@@ -465,7 +483,7 @@ namespace dxvk {
                                     | D3DPBLENDCAPS_BLENDFACTOR;
 
     // Only 9Ex devices advertise D3DPBLENDCAPS_SRCCOLOR2 and D3DPBLENDCAPS_INVSRCCOLOR2
-    if (m_parent->IsExtended())
+    if (m_parent->IsD3DCompatibile(D3DCompatibility::D3D9Ex))
       pCaps->SrcBlendCaps          |= D3DPBLENDCAPS_SRCCOLOR2
                                     | D3DPBLENDCAPS_INVSRCCOLOR2;
 
@@ -726,7 +744,7 @@ namespace dxvk {
 
 
   HMONITOR D3D9Adapter::GetMonitor() {
-    return GetDefaultMonitor();
+    return wsi::getDefaultMonitor();
   }
 
 
@@ -785,20 +803,14 @@ namespace dxvk {
     if (pRotation != nullptr)
       *pRotation = D3DDISPLAYROTATION_IDENTITY;
 
-    DEVMODEW devMode = DEVMODEW();
-    devMode.dmSize = sizeof(devMode);
+    wsi::WsiMode mode = { };
 
-    if (!GetMonitorDisplayMode(GetDefaultMonitor(), ENUM_CURRENT_SETTINGS, &devMode)) {
+    if (!wsi::getCurrentDisplayMode(wsi::getDefaultMonitor(), &mode)) {
       Logger::err("D3D9Adapter::GetAdapterDisplayModeEx: Failed to enum display settings");
       return D3DERR_INVALIDCALL;
     }
 
-    pMode->Size             = sizeof(D3DDISPLAYMODEEX);
-    pMode->Width            = devMode.dmPelsWidth;
-    pMode->Height           = devMode.dmPelsHeight;
-    pMode->RefreshRate      = devMode.dmDisplayFrequency;
-    pMode->Format           = D3DFMT_X8R8G8B8;
-    pMode->ScanLineOrdering = D3DSCANLINEORDERING_PROGRESSIVE;
+    *pMode = ConvertDisplayMode(mode);
     return D3D_OK;
   }
 
@@ -815,6 +827,16 @@ namespace dxvk {
       *pLUID = dxvk::GetAdapterLUID(m_ordinal);
 
     return D3D_OK;
+  }
+
+
+  void D3D9Adapter::RefreshFormatsTable() const {
+    m_d3d9Formats.RefreshFormatSupport(this);
+  }
+
+
+  bool D3D9Adapter::IsD3DCompatibile(D3DCompatibility d3dCompatibility) const {
+    return m_parent->IsD3DCompatibile(d3dCompatibility);
   }
 
 
@@ -873,41 +895,38 @@ namespace dxvk {
 
     // Walk over all modes that the display supports and
     // return those that match the requested format etc.
-    DEVMODEW devMode = { };
-    devMode.dmSize = sizeof(DEVMODEW);
+    wsi::WsiMode devMode = { };
 
     uint32_t modeIndex = 0;
 
     const auto forcedRatio = Ratio<DWORD>(options.forceAspectRatio);
 
-    while (GetMonitorDisplayMode(GetDefaultMonitor(), modeIndex++, &devMode)) {
+    while (wsi::getDisplayMode(wsi::getDefaultMonitor(), modeIndex++, &devMode)) {
       // Skip interlaced modes altogether
-      if (devMode.dmDisplayFlags & DM_INTERLACED)
+      if (devMode.interlaced)
         continue;
 
       // Skip modes with incompatible formats
-      if (devMode.dmBitsPerPel != GetMonitorFormatBpp(Format))
+      if (devMode.bitsPerPixel != GetMonitorFormatBpp(Format))
         continue;
 
-      if (!forcedRatio.undefined() && Ratio<DWORD>(devMode.dmPelsWidth, devMode.dmPelsHeight) != forcedRatio)
+      if (!forcedRatio.undefined() && Ratio<DWORD>(devMode.width, devMode.height) != forcedRatio)
         continue;
 
-      if (options.forceRefreshRate && devMode.dmDisplayFrequency != options.forceRefreshRate)
+      if (options.forceRefreshRate &&
+          devMode.refreshRate.numerator / devMode.refreshRate.denominator != options.forceRefreshRate)
         continue;
 
-      D3DDISPLAYMODEEX mode;
-      mode.Size             = sizeof(D3DDISPLAYMODEEX);
-      mode.Width            = devMode.dmPelsWidth;
-      mode.Height           = devMode.dmPelsHeight;
-      mode.RefreshRate      = devMode.dmDisplayFrequency;
-      mode.Format           = static_cast<D3DFORMAT>(Format);
-      mode.ScanLineOrdering = D3DSCANLINEORDERING_PROGRESSIVE;
+      D3DDISPLAYMODEEX mode = ConvertDisplayMode(devMode);
+      // Fix up the D3DFORMAT to match what we are enumerating
+      mode.Format = static_cast<D3DFORMAT>(Format);
 
       m_modes.push_back(mode);
     }
 
-    // Sort display modes by width, height and refresh rate,
-    // in that order. Some games rely on correct ordering.
+    // Sort display modes by width, height and refresh rate (descending), in that order.
+    // Some games rely on correct ordering, e.g. Prince of Persia (2008) expects the highest
+    // refresh rate to be listed first for a particular resolution.
     std::sort(m_modes.begin(), m_modes.end(),
       [](const D3DDISPLAYMODEEX& a, const D3DDISPLAYMODEEX& b) {
         if (a.Width < b.Width)   return true;

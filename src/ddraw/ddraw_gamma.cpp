@@ -10,16 +10,12 @@ namespace dxvk {
         IUnknown* pParent)
     : DDrawWrappedObject<IUnknown, IDirectDrawGammaControl>(pParent, std::move(proxyGamma))
     , m_commonSurf ( commonSurf ) {
-    Logger::debug("DDrawGammaControl: Created a new gamma control interface");
   }
 
   DDrawGammaControl::~DDrawGammaControl() {
-    Logger::debug("DDrawGammaControl: A gamma control interface bites the dust");
   }
 
   HRESULT STDMETHODCALLTYPE DDrawGammaControl::QueryInterface(REFIID riid, void** ppvObject) {
-    Logger::debug(">>> DDrawGammaControl::QueryInterface");
-
     if (unlikely(ppvObject == nullptr))
       return E_POINTER;
 
@@ -27,31 +23,24 @@ namespace dxvk {
 
     if (unlikely(riid == __uuidof(IUnknown)
               || riid == __uuidof(IDirectDrawSurface))) {
-      Logger::debug("DDrawGammaControl::QueryInterface: Query for IDirectDrawSurface");
       return m_parent->QueryInterface(riid, ppvObject);
     }
     if (unlikely(riid == __uuidof(IDirectDrawSurface2))) {
-      Logger::debug("DDrawGammaControl::QueryInterface: Query for IDirectDrawSurface2");
       return m_parent->QueryInterface(riid, ppvObject);
     }
     if (unlikely(riid == __uuidof(IDirectDrawSurface3))) {
-      Logger::debug("DDrawGammaControl::QueryInterface: Query for IDirectDrawSurface3");
       return m_parent->QueryInterface(riid, ppvObject);
     }
     if (unlikely(riid == __uuidof(IDirectDrawSurface4))) {
-      Logger::debug("DDrawGammaControl::QueryInterface: Query for IDirectDrawSurface4");
       return m_parent->QueryInterface(riid, ppvObject);
     }
     if (unlikely(riid == __uuidof(IDirectDrawSurface7))) {
-      Logger::debug("DDrawGammaControl::QueryInterface: Query for IDirectDrawSurface7");
       return m_parent->QueryInterface(riid, ppvObject);
     }
     if (unlikely(riid == __uuidof(IDirect3DTexture))) {
-      Logger::debug("DDrawGammaControl::QueryInterface: Query for IDirect3DTexture");
       return m_parent->QueryInterface(riid, ppvObject);
     }
     if (unlikely(riid == __uuidof(IDirect3DTexture2))) {
-      Logger::debug("DDrawGammaControl::QueryInterface: Query for IDirect3DTexture2");
       return m_parent->QueryInterface(riid, ppvObject);
     }
 
@@ -66,8 +55,6 @@ namespace dxvk {
   }
 
   HRESULT STDMETHODCALLTYPE DDrawGammaControl::GetGammaRamp(DWORD dwFlags, LPDDGAMMARAMP lpRampData) {
-    Logger::debug(">>> DDrawGammaControl::GetGammaRamp");
-
     if (unlikely(lpRampData == nullptr))
       return DDERR_INVALIDPARAMS;
 
@@ -76,8 +63,6 @@ namespace dxvk {
     D3DCommonDevice* commonDevice = commonIntf->GetCommonD3DDevice();
 
     if (likely(commonDevice != nullptr)) {
-      Logger::debug("DDrawGammaControl::GetGammaRamp: Getting gamma ramp via D3D9");
-
       d3d9::IDirect3DDevice9* d3d9Device = commonDevice->GetD3D9Device();
 
       d3d9::D3DGAMMARAMP rampData = { };
@@ -86,7 +71,6 @@ namespace dxvk {
       // Both gamma structs are identical in content/size
       memcpy(static_cast<void*>(lpRampData), static_cast<const void*>(&rampData), sizeof(DDGAMMARAMP));
     } else {
-      Logger::debug("DDrawGammaControl::GetGammaRamp: Getting gamma ramp via DDraw");
       return m_proxy->GetGammaRamp(dwFlags, lpRampData);
     }
 
@@ -94,8 +78,6 @@ namespace dxvk {
   }
 
   HRESULT STDMETHODCALLTYPE DDrawGammaControl::SetGammaRamp(DWORD dwFlags, LPDDGAMMARAMP lpRampData) {
-    Logger::debug(">>> DDrawGammaControl::SetGammaRamp");
-
     if (unlikely(lpRampData == nullptr))
       return DDERR_INVALIDPARAMS;
 
@@ -105,14 +87,11 @@ namespace dxvk {
       D3DCommonDevice* commonDevice = commonIntf->GetCommonD3DDevice();
 
       if (likely(commonDevice != nullptr)) {
-        Logger::debug("DDrawGammaControl::SetGammaRamp: Setting gamma ramp via D3D9");
-
         d3d9::IDirect3DDevice9* d3d9Device = commonDevice->GetD3D9Device();
 
         d3d9Device->SetGammaRamp(0, D3DSGR_NO_CALIBRATION,
                                  reinterpret_cast<const d3d9::D3DGAMMARAMP*>(lpRampData));
       } else {
-        Logger::debug("DDrawGammaControl::SetGammaRamp: Setting gamma ramp via DDraw");
         return m_proxy->SetGammaRamp(dwFlags, lpRampData);
       }
     } else {

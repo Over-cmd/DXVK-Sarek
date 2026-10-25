@@ -6,22 +6,16 @@
 
 namespace dxvk {
 
-  std::atomic<uint32_t> D3DLight::s_lightCount = 0;
+  std::atomic<uint32_t> D3DLight::s_light9Index = 0;
 
   D3DLight::D3DLight(IUnknown* pParent)
     : DDrawChildObject<IUnknown, IDirect3DLight>(pParent) {
-    m_lightCount = ++s_lightCount;
-
-    Logger::debug(str::format("D3DLight: Created a new light nr. [[1-", m_lightCount, "]]"));
   }
 
   D3DLight::~D3DLight() {
-    Logger::debug(str::format("D3DLight: Light nr. [[1-", m_lightCount, "]] bites the dust"));
   }
 
   HRESULT STDMETHODCALLTYPE D3DLight::QueryInterface(REFIID riid, void** ppvObject) {
-    Logger::debug(">> D3DLight::QueryInterface");
-
     if (unlikely(ppvObject == nullptr))
       return E_POINTER;
 
@@ -41,13 +35,10 @@ namespace dxvk {
   // Docs state: "The method returns DDERR_ALREADYINITIALIZED because
   // the Direct3DLight object is initialized when it is created."
   HRESULT STDMETHODCALLTYPE D3DLight::Initialize(IDirect3D *d3d) {
-    Logger::debug(">>> D3DLight::Initialize");
     return DDERR_ALREADYINITIALIZED;
   }
 
   HRESULT STDMETHODCALLTYPE D3DLight::SetLight(D3DLIGHT *data) {
-    Logger::debug(">>> D3DLight::SetLight");
-
     static constexpr D3DCOLORVALUE noLight = {0.0f, 0.0f, 0.0f, 0.0f};
 
     if (unlikely(data == nullptr))
@@ -108,20 +99,23 @@ namespace dxvk {
     // D3DLIGHT structure lights are, apparently, considered to be active by default
     m_isActive            = isD3DLight2 ? (m_flags & D3DLIGHT_ACTIVE) : true;
 
+    D3DCommonViewport* commonViewport = nullptr;
+    if (m_viewport6 != nullptr) {
+      commonViewport = m_viewport6->GetCommonViewport();
+    } else if (m_viewport5 != nullptr) {
+      commonViewport = m_viewport5->GetCommonViewport();
+    } else if (m_viewport3 != nullptr) {
+      commonViewport = m_viewport3->GetCommonViewport();
+    }
+
     // Update the D3D9 light directly if it's actively being used
-    if (m_viewport6 != nullptr && m_viewport6->GetCommonViewport()->IsCurrentViewport())
-      m_viewport6->ApplyAndActivateLight(m_lightCount, this);
-    else if (m_viewport5 != nullptr && m_viewport5->GetCommonViewport()->IsCurrentViewport())
-      m_viewport5->ApplyAndActivateLight(m_lightCount, this);
-    else if (m_viewport3 != nullptr && m_viewport3->GetCommonViewport()->IsCurrentViewport())
-      m_viewport3->ApplyAndActivateLight(m_lightCount, this);
+    if (commonViewport != nullptr && commonViewport->IsCurrentViewport())
+      commonViewport->ApplyAndActivateLight(this);
 
     return D3D_OK;
   }
 
   HRESULT STDMETHODCALLTYPE D3DLight::GetLight(D3DLIGHT *data) {
-    Logger::debug(">>> D3DLight::GetLight");
-
     if (unlikely(data == nullptr))
       return DDERR_INVALIDPARAMS;
 

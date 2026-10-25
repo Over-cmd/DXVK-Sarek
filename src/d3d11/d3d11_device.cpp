@@ -130,6 +130,9 @@ namespace dxvk {
     if (FAILED(hr))
       return hr;
 
+    if (desc.MiscFlags & D3D11_RESOURCE_MISC_TILED)
+      return E_INVALIDARG;
+
     if (!ppTexture1D)
       return S_FALSE;
 
@@ -705,32 +708,13 @@ namespace dxvk {
       uint32_t attrCount = CompactSparseList(attrList.data(), attrMask);
       uint32_t bindCount = CompactSparseList(bindList.data(), bindMask);
 
-      // Check if there are any semantics defined in the
-      // shader that are not included in the current input
-      // layout.
-      for (auto i = inputSignature->begin(); i != inputSignature->end(); i++) {
-        bool found = i->systemValue != DxbcSystemValue::None;
+      if (!ppInputLayout)
+        return S_FALSE;
 
-        for (uint32_t j = 0; j < attrCount && !found; j++)
-          found = attrList.at(j).location == i->registerId;
-
-        if (!found) {
-          Logger::warn(str::format(
-            "D3D11Device: Vertex input '",
-            i->semanticName, i->semanticIndex,
-            "' not defined by input layout"));
-        }
-      }
-
-      // Create the actual input layout object
-      // if the application requests it.
-      if (ppInputLayout != nullptr) {
-        *ppInputLayout = ref(
-          new D3D11InputLayout(this,
-            attrCount, attrList.data(),
-            bindCount, bindList.data()));
-      }
-
+      *ppInputLayout = ref(
+        new D3D11InputLayout(this,
+          attrCount, attrList.data(),
+          bindCount, bindList.data()));
       return S_OK;
     } catch (const DxvkError& e) {
       Logger::err(e.message());
@@ -816,6 +800,8 @@ namespace dxvk {
     InitReturnPtr(ppGeometryShader);
     D3D11CommonShader module;
 
+    if (!m_dxvkDevice->features().extTransformFeedback.transformFeedback)
+      return DXGI_ERROR_INVALID_CALL;
 
     // Zero-init some counterss so that we can increment
     // them while walking over the stream output entries
@@ -1381,6 +1367,22 @@ namespace dxvk {
           ID3D11Resource*             pSrcResource,
           UINT                        SrcSubresource,
     const D3D11_BOX*                  pSrcBox) {
+    auto texture = GetCommonTexture(pSrcResource);
+
+    if (!texture)
+      return;
+
+    if (texture->Desc()->Usage != D3D11_USAGE_DEFAULT
+     || texture->GetMapMode() == D3D11_COMMON_TEXTURE_MAP_MODE_NONE
+     || texture->CountSubresources() <= SrcSubresource)
+      return;
+
+    uint32_t map = texture->GetMapType(SrcSubresource);
+
+    if (map != uint32_t(D3D11_MAP_READ)
+     && map != uint32_t(D3D11_MAP_READ_WRITE))
+      return;
+
     CopySubresourceData(
       pDstData, DstRowPitch, DstDepthPitch,
       pSrcResource, SrcSubresource, pSrcBox);
@@ -1394,6 +1396,23 @@ namespace dxvk {
     const void*                       pSrcData,
           UINT                        SrcRowPitch,
           UINT                        SrcDepthPitch) {
+    auto texture = GetCommonTexture(pDstResource);
+
+    if (!texture)
+      return;
+
+    if (texture->Desc()->Usage != D3D11_USAGE_DEFAULT
+     || texture->GetMapMode() == D3D11_COMMON_TEXTURE_MAP_MODE_NONE
+     || texture->CountSubresources() <= DstSubresource)
+      return;
+
+    uint32_t map = texture->GetMapType(DstSubresource);
+
+    if (map != uint32_t(D3D11_MAP_WRITE)
+     && map != uint32_t(D3D11_MAP_WRITE_NO_OVERWRITE)
+     && map != uint32_t(D3D11_MAP_READ_WRITE))
+      return;
+
     CopySubresourceData(
       pSrcData, SrcRowPitch, SrcRowPitch,
       pDstResource, DstSubresource, pDstBox);
@@ -3119,7 +3138,7 @@ namespace dxvk {
     // Make sure the back buffer size is not zero
     DXGI_SWAP_CHAIN_DESC1 desc = *pDesc;
 
-    GetWindowClientSize(hWnd,
+    wsi::getWindowSize(hWnd,
       desc.Width  ? nullptr : &desc.Width,
       desc.Height ? nullptr : &desc.Height);
 

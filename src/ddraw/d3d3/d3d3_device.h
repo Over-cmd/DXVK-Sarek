@@ -82,7 +82,7 @@ namespace dxvk {
 
     HRESULT STDMETHODCALLTYPE DeleteMatrix(D3DMATRIXHANDLE D3DMatHandle);
 
-    void InitializeDS();
+    HRESULT InitializeRTAndDS();
 
     void UpdateSurfaceDirtyTracking(bool dirtyRenderTarget, bool dirtyDepthStencil, bool dirtyPrimarySurface);
 
@@ -94,12 +94,8 @@ namespace dxvk {
       return m_multithread.AcquireLock();
     }
 
-    D3DSTATS GetStatsInternal() const {
-      return m_stats;
-    }
-
     DDrawSurface* GetRenderTarget() const {
-      return m_rt.ptr();
+      return m_rt;
     }
 
     DDrawSurface* GetDepthStencil() const {
@@ -114,15 +110,11 @@ namespace dxvk {
 
     inline void DDrawDirtySurfaceUpload();
 
-    inline void AddViewportInternal(IDirect3DViewport* viewport);
-
-    inline void DeleteViewportInternal(IDirect3DViewport* viewport);
-
     inline HRESULT SetTextureInternal(DDrawSurface* surface, DWORD textureHandle);
 
-    inline HRESULT STDMETHODCALLTYPE SetRenderStateInternal(D3DRENDERSTATETYPE dwRenderStateType, DWORD dwRenderState);
+    inline HRESULT SetRenderStateInternal(D3DRENDERSTATETYPE dwRenderStateType, DWORD dwRenderState);
 
-    inline HRESULT STDMETHODCALLTYPE SetLightStateInternal(D3DLIGHTSTATETYPE dwLightStateType, DWORD dwLightState);
+    inline HRESULT SetLightStateInternal(D3DLIGHTSTATETYPE dwLightStateType, DWORD dwLightState);
 
     inline void DrawTriangleInternal(D3DTRIANGLE* triangle, uint16_t count, DWORD vertexCount, const D3DTLVERTEX* vertexBuffer);
 
@@ -139,33 +131,35 @@ namespace dxvk {
         m_commonIntf->SetCommonD3DDevice(m_commonD3DDevice.ptr());
     }
 
-    Com<D3DCommonDevice>           m_commonD3DDevice;
+    Com<D3DCommonDevice>            m_commonD3DDevice;
 
-    DDrawCommonInterface*          m_commonIntf       = nullptr;
+    DDrawCommonInterface*           m_commonIntf       = nullptr;
 
-    Com<DxvkD3D8Bridge>            m_bridge;
+    Com<IDxvkLegacyD3DDeviceBridge> m_bridge;
 
-    D3DMultithread                 m_multithread;
+    D3DMultithread                  m_multithread;
 
-    D3DDEVICEDESC3                 m_desc;
+    D3DDEVICEDESC3                  m_desc;
 
-    Com<DDrawSurface>              m_rt;
-    Com<DDrawSurface, false>       m_ds;
+    // In D3D3, the RT is the parent of the device
+    DDrawSurface*                   m_rt               = nullptr;
+    Com<DDrawSurface, false>        m_ds;
 
-    Com<D3D3Viewport>              m_currentViewport;
-    std::vector<Com<D3D3Viewport>> m_viewports;
+    Com<DDrawSurface, false>        m_texture;
 
-    D3DSTATS                       m_stats            = { };
+    Com<D3D3Viewport>               m_currentViewport;
+    std::vector<Com<D3D3Viewport>>  m_viewports;
 
-    D3DMATRIXHANDLE                m_worldHandle      = 0;
-    D3DMATRIXHANDLE                m_viewHandle       = 0;
-    D3DMATRIXHANDLE                m_projectionHandle = 0;
+    D3DSTATS                        m_stats            = { };
 
-    std::atomic<D3DMATRIXHANDLE>   m_matrixHandle     = 0;
-    std::unordered_map<D3DMATRIXHANDLE, D3DMATRIX> m_matrices;
+    D3DMATRIXHANDLE                 m_worldHandle      = 0;
+    D3DMATRIXHANDLE                 m_viewHandle       = 0;
+    D3DMATRIXHANDLE                 m_projectionHandle = 0;
 
-    uint32_t                       m_deviceCount      = 0;
-    static std::atomic<uint32_t>   s_deviceCount;
+    // Tests have indicated that once created, matrix handles are
+    // shared across all devices, regardless of their relation
+    static std::atomic<D3DMATRIXHANDLE> s_matrixHandle;
+    static inline std::unordered_map<D3DMATRIXHANDLE, D3DMATRIX> s_matrices;
 
   };
 

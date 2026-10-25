@@ -158,6 +158,24 @@ namespace dxvk {
     if (pDesc->Pool != D3DPOOL_DEFAULT && (pDesc->Usage & usageRTOrDS))
       return D3DERR_INVALIDCALL;
 
+    // RENDERTARGET and DEPTHSTENCIL in D3DPOOL_DEFAULT
+    // can not also have DYNAMIC usage
+    if (pDesc->Pool == D3DPOOL_DEFAULT &&
+        (pDesc->Usage & usageRTOrDS) &&
+        (pDesc->Usage & D3DUSAGE_DYNAMIC))
+      return D3DERR_INVALIDCALL;
+
+    // Volume textures can not be used as render targets
+    if (ResourceType == D3DRTYPE_VOLUMETEXTURE &&
+        (pDesc->Usage & D3DUSAGE_RENDERTARGET))
+      return D3DERR_INVALIDCALL;
+
+    // Volume textures in D3DPOOL_SCRATCH must not have DYNAMIC usage
+    if (ResourceType == D3DRTYPE_VOLUMETEXTURE
+      && pDesc->Pool == D3DPOOL_SCRATCH
+      && (pDesc->Usage & D3DUSAGE_DYNAMIC))
+      return D3DERR_INVALIDCALL;
+
     // Use the maximum possible mip level count if the supplied
     // mip level count is either unspecified (0) or invalid
     const uint32_t maxMipLevelCount = pDesc->MultiSample <= D3DMULTISAMPLE_NONMASKABLE
@@ -255,7 +273,6 @@ namespace dxvk {
       imageInfo.sharing.mode = (*pSharedHandle == INVALID_HANDLE_VALUE || *pSharedHandle == nullptr)
         ? DxvkSharedHandleMode::Export
         : DxvkSharedHandleMode::Import;
-      imageInfo.sharing.type = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_KMT_BIT;
       imageInfo.sharing.handle = *pSharedHandle;
       imageInfo.shared = true;
       // TODO: validate metadata?

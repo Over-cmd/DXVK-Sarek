@@ -318,6 +318,23 @@ namespace dxvk {
       enabledFeatures.khrBufferDeviceAddress.bufferDeviceAddress = VK_TRUE;
     }
 
+    // Diagnostic mode. Every extension used here is optional, so a device
+    // is created on nearly any implementation and anything missing shows
+    // up later as incorrect rendering rather than a failure. Promoting the
+    // optional ones to required makes extension negotiation name each
+    // unsupported extension and refuse the device, which answers whether a
+    // report belongs to us or to the driver. Passive and disabled
+    // extensions keep their mode: nothing relies on them, so failing a
+    // device over one would report nothing useful.
+    if (env::getEnvVar("DXVK_SAREK_STRICT") == "1") {
+      Logger::warn("DxvkAdapter: Strict mode, optional extensions are required");
+
+      for (auto* ext : devExtensionList) {
+        if (ext->mode() == DxvkExtMode::Optional)
+          ext->setMode(DxvkExtMode::Required);
+      }
+    }
+
     DxvkNameSet extensionsEnabled;
 
     if (!m_deviceExtensions.enableExtensions(
@@ -346,6 +363,7 @@ namespace dxvk {
     Logger::info("Enabled device extensions:");
     this->logNameList(extensionNameList);
     this->logFeatures(enabledFeatures);
+    this->logDegradation(enabledFeatures);
 
     // Create pNext chain for additional device features
     enabledFeatures.core.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2_KHR;
@@ -730,9 +748,21 @@ namespace dxvk {
       m_deviceFeatures.extTransformFeedback.pNext = std::exchange(m_deviceFeatures.core.pNext, &m_deviceFeatures.extTransformFeedback);
     }
 
-    if (m_deviceExtensions.supports(VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME) >= 3) {
+    uint32_t divisorRevision = m_deviceExtensions.supports(VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME);
+
+    if (divisorRevision >= 3) {
       m_deviceFeatures.extVertexAttributeDivisor.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_FEATURES_EXT;
       m_deviceFeatures.extVertexAttributeDivisor.pNext = std::exchange(m_deviceFeatures.core.pNext, &m_deviceFeatures.extVertexAttributeDivisor);
+    } else if (divisorRevision) {
+      // Revisions 1 and 2 have no feature struct at all: supporting the
+      // extension is the capability, driven by the pipeline struct alone,
+      // and only the zero divisor is added in revision 3. Without this the
+      // bit reads zero on those drivers and the pipeline code drops the
+      // divisor struct, silently ignoring instance divisors on hardware
+      // that handles them. Nothing is chained here, so these values are
+      // not overwritten by the feature query that follows.
+      m_deviceFeatures.extVertexAttributeDivisor.vertexAttributeInstanceRateDivisor = VK_TRUE;
+      m_deviceFeatures.extVertexAttributeDivisor.vertexAttributeInstanceRateZeroDivisor = VK_FALSE;
     }
 
     if (m_deviceExtensions.supports(VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME)) {
@@ -769,6 +799,70 @@ namespace dxvk {
     }
 
     return VK_QUEUE_FAMILY_IGNORED;
+  }
+
+
+  // Features with no working fallback. Each is emulated or ignored when
+  // missing, so the device still runs but draws something other than what
+  // the application asked for. The text names the symptom rather than the
+  // extension, so a screenshot in a report can be matched against the log
+  // without knowing any Vulkan. Filled through a reference because the
+  // list type cannot be copied or moved out of a function.
+  static void degradedFeatureList(
+    const DxvkDeviceFeatures&           features,
+          small_vector<const char*, 8>& result) {
+    if (!features.extCustomBorderColor.customBorderColorWithoutFormat)
+      result.push_back("Custom border colors unsupported. Border addressing "
+        "falls back to transparent black: wrong colors along texture edges, "
+        "dark seams on decals and terrain.");
+
+    if (!features.extDepthClipEnable.depthClipEnable)
+      result.push_back("Depth clip control unsupported. Clipping is "
+        "approximated by depth clamping: geometry that should be cut at the "
+        "near plane is stretched or missing.");
+
+    if (!features.extTransformFeedback.transformFeedback)
+      result.push_back("Transform feedback unsupported. D3D11 stream output "
+        "and D3D9 ProcessVertices are unavailable: missing particles, grass "
+        "or skinned geometry.");
+
+    if (!features.extVertexAttributeDivisor.vertexAttributeInstanceRateDivisor)
+      result.push_back("Vertex attribute divisor unsupported. Instance "
+        "divisors are ignored: instanced geometry drawn at wrong positions "
+        "or collapsed onto a single instance.");
+
+    if (!features.extNonSeamlessCubeMap.nonSeamlessCubeMap)
+      result.push_back("Non-seamless cube maps unsupported. D3D9 cube map "
+        "edges are filtered seamlessly: reflections differ from the "
+        "reference at face boundaries.");
+
+    if (!features.core.features.depthBounds)
+      result.push_back("Depth bounds test unsupported. The test is ignored: "
+        "light volumes and decals may bleed past their intended bounds.");
+  }
+
+
+  bool DxvkAdapter::hasDegradedFeatures(const DxvkDeviceFeatures& features) {
+    small_vector<const char*, 8> issues;
+    degradedFeatureList(features, issues);
+    return issues.size() != 0;
+  }
+
+
+  void DxvkAdapter::logDegradation(const DxvkDeviceFeatures& features) {
+    small_vector<const char*, 8> issues;
+    degradedFeatureList(features, issues);
+
+    if (!issues.size()) {
+      Logger::info("Degraded features: none");
+      return;
+    }
+
+    Logger::warn(str::format("Degraded features: ", issues.size(),
+      " unsupported, rendering may be incorrect:"));
+
+    for (size_t i = 0; i < issues.size(); i++)
+      Logger::warn(str::format("  ", issues[i]));
   }
 
 

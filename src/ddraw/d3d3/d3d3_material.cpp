@@ -11,29 +11,22 @@
 
 namespace dxvk {
 
-  std::atomic<uint32_t> D3D3Material::s_materialCount = 0;
-
   D3D3Material::D3D3Material(
+        D3DCommonMaterial* commonMaterial,
         D3D3Interface* pParent)
-    : DDrawChildObject<D3D3Interface, IDirect3DMaterial>(pParent) {
-    m_commonMaterial = new D3DCommonMaterial();
+    : DDrawChildObject<D3D3Interface, IDirect3DMaterial>(pParent)
+    , m_commonMaterial ( commonMaterial ) {
+    if (m_commonMaterial == nullptr)
+      m_commonMaterial = new D3DCommonMaterial();
 
     m_commonMaterial->SetD3D3Material(this);
-
-    m_materialCount = ++s_materialCount;
-
-    Logger::debug(str::format("D3D3Material: Created a new material nr. [[1-", m_materialCount, "]]"));
   }
 
   D3D3Material::~D3D3Material() {
     m_commonMaterial->SetD3D3Material(nullptr);
-
-    Logger::debug(str::format("D3D3Material: Material nr. [[1-", m_materialCount, "]] bites the dust"));
   }
 
   HRESULT STDMETHODCALLTYPE D3D3Material::QueryInterface(REFIID riid, void** ppvObject) {
-    Logger::debug(">>> D3D3Material::QueryInterface");
-
     if (unlikely(ppvObject == nullptr))
       return E_POINTER;
 
@@ -53,13 +46,10 @@ namespace dxvk {
   // Docs state: "Returns DDERR_ALREADYINITIALIZED because the
   // Direct3DMaterial object is initialized when it is created."
   HRESULT STDMETHODCALLTYPE D3D3Material::Initialize(LPDIRECT3D lpDirect3D) {
-    Logger::debug(">>> D3D3Material::Initialize");
     return DDERR_ALREADYINITIALIZED;
   }
 
   HRESULT STDMETHODCALLTYPE D3D3Material::SetMaterial(D3DMATERIAL *data) {
-    Logger::debug(">>> D3D3Material::SetMaterial");
-
     if (unlikely(data == nullptr))
       return DDERR_INVALIDPARAMS;
 
@@ -81,8 +71,8 @@ namespace dxvk {
     if (likely(commonDevice != nullptr)) {
       const D3DMATERIALHANDLE handle        = m_commonMaterial->GetMaterialHandle();
       const D3DMATERIALHANDLE currentHandle = commonDevice->GetCurrentMaterialHandle();
-      if (currentHandle == handle) {
-        Logger::debug(str::format("D3D3Material::SetMaterial: Applying material nr. ", handle, " to D3D9"));
+      if (handle && currentHandle == handle) {
+        //Logger::debug(str::format("D3D3Material::SetMaterial: Applying material nr. ", handle, " to D3D9"));
         commonDevice->GetD3D9Device()->SetMaterial(material9);
       }
     }
@@ -91,8 +81,6 @@ namespace dxvk {
   }
 
   HRESULT STDMETHODCALLTYPE D3D3Material::GetMaterial(D3DMATERIAL *data) {
-    Logger::debug(">>> D3D3Material::GetMaterial");
-
     if (unlikely(data == nullptr))
       return DDERR_INVALIDPARAMS;
 
@@ -108,8 +96,6 @@ namespace dxvk {
   }
 
   HRESULT STDMETHODCALLTYPE D3D3Material::GetHandle(IDirect3DDevice *device, D3DMATERIALHANDLE *handle) {
-    Logger::debug(">>> D3D3Material::GetHandle");
-
     if (unlikely(device == nullptr || handle == nullptr))
       return DDERR_INVALIDPARAMS;
 

@@ -13,7 +13,7 @@ namespace dxvk {
 
   public:
 
-    D3D5Material(D3D5Interface* pParent);
+    D3D5Material(D3DCommonMaterial* commonMaterial, D3D5Interface* pParent);
 
     ~D3D5Material();
 
@@ -32,9 +32,6 @@ namespace dxvk {
   private:
 
     Com<D3DCommonMaterial> m_commonMaterial;
-
-    uint32_t               m_materialCount = 0;
-    static std::atomic<uint32_t> s_materialCount;
 
   };
 

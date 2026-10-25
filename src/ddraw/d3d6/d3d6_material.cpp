@@ -11,29 +11,22 @@
 
 namespace dxvk {
 
-  std::atomic<uint32_t> D3D6Material::s_materialCount = 0;
-
   D3D6Material::D3D6Material(
+        D3DCommonMaterial* commonMaterial,
         D3D6Interface* pParent)
-    : DDrawChildObject<D3D6Interface, IDirect3DMaterial3>(pParent) {
-    m_commonMaterial = new D3DCommonMaterial();
+    : DDrawChildObject<D3D6Interface, IDirect3DMaterial3>(pParent)
+    , m_commonMaterial ( commonMaterial ) {
+    if (m_commonMaterial == nullptr)
+      m_commonMaterial = new D3DCommonMaterial();
 
     m_commonMaterial->SetD3D6Material(this);
-
-    m_materialCount = ++s_materialCount;
-
-    Logger::debug(str::format("D3D6Material: Created a new material nr. [[3-", m_materialCount, "]]"));
   }
 
   D3D6Material::~D3D6Material() {
     m_commonMaterial->SetD3D6Material(nullptr);
-
-    Logger::debug(str::format("D3D6Material: Material nr. [[3-", m_materialCount, "]] bites the dust"));
   }
 
   HRESULT STDMETHODCALLTYPE D3D6Material::QueryInterface(REFIID riid, void** ppvObject) {
-    Logger::debug(">>> D3D6Material::QueryInterface");
-
     if (unlikely(ppvObject == nullptr))
       return E_POINTER;
 
@@ -51,8 +44,6 @@ namespace dxvk {
   }
 
   HRESULT STDMETHODCALLTYPE D3D6Material::SetMaterial(D3DMATERIAL *data) {
-    Logger::debug(">>> D3D6Material::SetMaterial");
-
     if (unlikely(data == nullptr))
       return DDERR_INVALIDPARAMS;
 
@@ -74,8 +65,8 @@ namespace dxvk {
     if (likely(commonDevice != nullptr)) {
       const D3DMATERIALHANDLE handle        = m_commonMaterial->GetMaterialHandle();
       const D3DMATERIALHANDLE currentHandle = commonDevice->GetCurrentMaterialHandle();
-      if (currentHandle == handle) {
-        Logger::debug(str::format("D3D6Material::SetMaterial: Applying material nr. ", handle, " to D3D9"));
+      if (handle && currentHandle == handle) {
+        //Logger::debug(str::format("D3D6Material::SetMaterial: Applying material nr. ", handle, " to D3D9"));
         commonDevice->GetD3D9Device()->SetMaterial(material9);
       }
     }
@@ -84,8 +75,6 @@ namespace dxvk {
   }
 
   HRESULT STDMETHODCALLTYPE D3D6Material::GetMaterial(D3DMATERIAL *data) {
-    Logger::debug(">>> D3D6Material::GetMaterial");
-
     if (unlikely(data == nullptr))
       return DDERR_INVALIDPARAMS;
 
@@ -101,8 +90,6 @@ namespace dxvk {
   }
 
   HRESULT STDMETHODCALLTYPE D3D6Material::GetHandle(IDirect3DDevice3 *device, D3DMATERIALHANDLE *handle) {
-    Logger::debug(">>> D3D6Material::GetHandle");
-
     if (unlikely(device == nullptr || handle == nullptr))
       return DDERR_INVALIDPARAMS;
 

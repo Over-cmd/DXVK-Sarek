@@ -5,6 +5,8 @@
 #include "dxvk_openxr.h"
 #include "dxvk_platform_exts.h"
 
+#include "../wsi/wsi_platform.h"
+
 #include <algorithm>
 
 namespace dxvk {
@@ -12,6 +14,8 @@ namespace dxvk {
   DxvkInstance::DxvkInstance() {
     Logger::info(str::format("Game: ", env::getExeName()));
     Logger::info(str::format("DXVK-Sarek: ", DXVK_VERSION));
+
+    wsi::init();
 
     m_config = Config::getUserConfig();
     m_config.merge(Config::getAppConfig(env::getExePath()));
@@ -50,7 +54,7 @@ namespace dxvk {
 
 
   DxvkInstance::~DxvkInstance() {
-
+    wsi::quit();
   }
 
 
@@ -130,7 +134,7 @@ namespace dxvk {
     appInfo.pApplicationName      = appName.c_str();
     appInfo.applicationVersion    = 0;
     appInfo.pEngineName           = "DXVK";
-    appInfo.engineVersion         = VK_MAKE_VERSION(1, 12, 0);
+    appInfo.engineVersion         = VK_MAKE_VERSION(1, 14, 1);
     appInfo.apiVersion            = VK_MAKE_VERSION(1, 1, 0);
 
     VkInstanceCreateInfo info;

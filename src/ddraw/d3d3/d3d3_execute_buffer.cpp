@@ -4,29 +4,15 @@
 
 namespace dxvk {
 
-  std::atomic<uint32_t> D3D3ExecuteBuffer::s_buffCount = 0;
-
   D3D3ExecuteBuffer::D3D3ExecuteBuffer(D3D3Device* pParent, D3DEXECUTEBUFFERDESC* pDesc)
     : DDrawChildObject<D3D3Device, IDirect3DExecuteBuffer>(pParent) {
-    if (likely(pDesc->dwFlags & D3DDEB_BUFSIZE)) {
-      m_buffer.resize(pDesc->dwBufferSize);
-      Logger::debug(str::format("D3D3ExecuteBuffer: Buffer is initialized with size ", pDesc->dwBufferSize));
-    } else {
-      Logger::warn("D3D3ExecuteBuffer: No buffer size specified during initialization");
-    }
-
-    m_buffCount = ++s_buffCount;
-
-    Logger::debug(str::format("D3D3ExecuteBuffer: Created a new execute buffer nr. {{1-", m_buffCount, "}}:"));
+    m_buffer.resize(pDesc->dwBufferSize);
   }
 
   D3D3ExecuteBuffer::~D3D3ExecuteBuffer() {
-    Logger::debug(str::format("D3D3ExecuteBuffer: Execute buffer nr. {{1-", m_buffCount, "}} bites the dust"));
   }
 
   HRESULT STDMETHODCALLTYPE D3D3ExecuteBuffer::QueryInterface(REFIID riid, void** ppvObject) {
-    Logger::debug(">> D3D3ExecuteBuffer::QueryInterface");
-
     if (unlikely(ppvObject == nullptr))
       return E_POINTER;
 
@@ -49,13 +35,12 @@ namespace dxvk {
     if (unlikely(m_executed))
       lock = m_parent->LockDevice();
 
-    Logger::debug(">>> D3D3ExecuteBuffer::GetExecuteData");
-
     if (unlikely(lpData == nullptr))
       return DDERR_INVALIDPARAMS;
 
-    if (unlikely(m_buffer.size() == 0))
-      return DDERR_INVALIDPARAMS;
+    // Not validated by native for GetExecuteData() calls
+    //if (unlikely(lpData->dwSize != sizeof(D3DEXECUTEDATA)))
+      //return DDERR_INVALIDPARAMS;
 
     *lpData = m_executeData;
 
@@ -65,7 +50,6 @@ namespace dxvk {
   // Docs state: "Returns DDERR_ALREADYINITIALIZED because the
   // Direct3DExecuteBuffer object is initialized when it is created."
   HRESULT STDMETHODCALLTYPE D3D3ExecuteBuffer::Initialize(LPDIRECT3DDEVICE lpDirect3DDevice, LPD3DEXECUTEBUFFERDESC lpDesc) {
-    Logger::debug(">>> D3D3ExecuteBuffer::Initialize");
     return DDERR_ALREADYINITIALIZED;
   }
 
@@ -75,16 +59,14 @@ namespace dxvk {
     if (unlikely(m_executed))
       lock = m_parent->LockDevice();
 
-    Logger::debug(">>> D3D3ExecuteBuffer::Lock");
-
     if (unlikely(lpDesc == nullptr))
+      return DDERR_INVALIDPARAMS;
+
+    if (unlikely(lpDesc->dwSize != sizeof(D3DEXECUTEBUFFERDESC)))
       return DDERR_INVALIDPARAMS;
 
     if (unlikely(m_locked))
       return D3DERR_EXECUTE_LOCKED;
-
-    if (unlikely(lpDesc->dwSize != sizeof(D3DEXECUTEBUFFERDESC)))
-      return DDERR_INVALIDPARAMS;
 
     lpDesc->dwFlags = D3DDEB_BUFSIZE | D3DDEB_LPDATA;
     lpDesc->dwBufferSize = m_buffer.size();
@@ -97,7 +79,6 @@ namespace dxvk {
 
   // Docs state: "Not currently implemented."
   HRESULT STDMETHODCALLTYPE D3D3ExecuteBuffer::Optimize(DWORD dwUnknown) {
-    Logger::debug(">>> D3D3ExecuteBuffer::Optimize");
     return DDERR_UNSUPPORTED;
   }
 
@@ -107,16 +88,25 @@ namespace dxvk {
     if (unlikely(m_executed))
       lock = m_parent->LockDevice();
 
-    Logger::debug(">>> D3D3ExecuteBuffer::SetExecuteData");
-
-    if (unlikely(lpData == nullptr || m_buffer.size() == 0))
+    if (unlikely(lpData == nullptr))
       return DDERR_INVALIDPARAMS;
 
-    if (unlikely(lpData->dwInstructionOffset + lpData->dwInstructionLength > m_buffer.size()))
+    if (unlikely(lpData->dwSize != sizeof(D3DEXECUTEDATA)))
       return DDERR_INVALIDPARAMS;
 
-    if (unlikely(lpData->dwVertexOffset + lpData->dwVertexCount > m_buffer.size()))
-      return DDERR_INVALIDPARAMS;
+    const size_t instructionSize = lpData->dwInstructionOffset + lpData->dwInstructionLength;
+    const size_t vertexSize      = lpData->dwVertexOffset + lpData->dwVertexCount * sizeof(D3DVERTEX);
+    const size_t hVertexSize     = lpData->dwHVertexOffset + lpData->dwVertexCount * sizeof(D3DTLVERTEX);
+    const size_t bufferSize      = m_buffer.size();
+
+    // Not validated by native, thus the call will succeed even if the buffer size is insufficient.
+    // Incoming sends a lot of such junk calls, but apparently doesn't blow up because of it.
+    if (unlikely(instructionSize > bufferSize || vertexSize > bufferSize || hVertexSize > bufferSize)) {
+      static bool s_bufferSizeWarningShow;
+
+      if (!std::exchange(s_bufferSizeWarningShow, true))
+        Logger::warn("D3D3ExecuteBuffer::SetExecuteData: Buffer size is insufficient for specified data");
+    }
 
     m_executeData = *lpData;
 
@@ -129,8 +119,6 @@ namespace dxvk {
     if (unlikely(m_executed))
       lock = m_parent->LockDevice();
 
-    Logger::debug(">>> D3D3ExecuteBuffer::Unlock");
-
     if (unlikely(!m_locked))
       return D3DERR_EXECUTE_NOT_LOCKED;
 
@@ -141,7 +129,6 @@ namespace dxvk {
 
   // Docs state: "Not currently implemented."
   HRESULT STDMETHODCALLTYPE D3D3ExecuteBuffer::Validate(LPDWORD lpdwOffset, LPD3DVALIDATECALLBACK lpFunc, LPVOID lpUserArg, DWORD dwReserved) {
-    Logger::debug(">>> D3D3ExecuteBuffer::Validate");
     return DDERR_UNSUPPORTED;
   }
 

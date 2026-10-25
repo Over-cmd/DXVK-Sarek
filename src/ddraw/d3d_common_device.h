@@ -44,7 +44,21 @@ namespace dxvk {
 
     DDraw7Surface* GetCurrentRenderTarget7() const;
 
+    DDrawCommonSurface* GetCommonRenderTarget() const;
+
+    DDrawCommonSurface* GetCommonDepthStencil() const;
+
     bool IsCurrentRenderTarget(DDrawCommonSurface* commonSurface) const;
+
+    void UpdateSurfaceDirtyTracking(bool dirtyRenderTarget, bool dirtyDepthStencil, bool dirtyPrimarySurface);
+
+    void SetDepthWriteEnabled(bool isDepthWriteEnabled) {
+      m_isDepthWriteEnabled = isDepthWriteEnabled;
+    }
+
+    bool IsDepthWriteEnabled() const {
+      return m_isDepthWriteEnabled;
+    }
 
     void SetInScene(bool inScene) {
       m_inScene = inScene;
@@ -60,8 +74,6 @@ namespace dxvk {
 
     bool IsHALOrTNLHALDevice() const {
       return m_deviceGUID == IID_IDirect3DHALDevice ||
-             // Functionally identical to a HAL device
-             m_deviceGUID == IID_WineD3DDevice ||
              m_deviceGUID == IID_IDirect3DTnLHalDevice;
     }
 
@@ -196,11 +208,15 @@ namespace dxvk {
   private:
 
     bool                        m_inScene             = false;
+    // D3DRENDERSTATE_ZWRITEENABLE, defaults to TRUE.
+    // Used only for D3D9 depth stencil surface dirtying.
+    bool                        m_isDepthWriteEnabled = true;
 
     DDrawCommonInterface*       m_commonIntf          = nullptr;
 
     GUID                        m_deviceGUID;
     uint32_t                    m_totalMemory         = 0;
+
     D3DMATERIALHANDLE           m_materialHandle      = 0;
     D3DTEXTUREHANDLE            m_textureHandle       = 0;
 

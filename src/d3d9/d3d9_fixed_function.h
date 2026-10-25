@@ -41,6 +41,7 @@ namespace dxvk {
     D3D9FixedFunctionOptions(const Rc<DxvkDevice>& device, const D3D9Options* options);
 
     bool    invariantPosition;
+    bool splitSamplerSlots;
     int32_t drefScaling;
     bool    enableClipDistance;
   };
@@ -115,6 +116,7 @@ namespace dxvk {
         uint32_t SpecularEnabled : 1;
 
         uint32_t UseLegacyLights : 1;
+        uint32_t AlternatePixelCenter : 1;
 
         uint32_t TexcoordDeclMask : 24;
         uint32_t HasFog : 1;
@@ -165,6 +167,12 @@ namespace dxvk {
         // Affects all stages.
         uint32_t     GlobalSpecularEnable : 1;
         uint32_t     GlobalFlatShade      : 1;
+
+        uint32_t     AddressU        : 3;
+        uint32_t     AddressV        : 3;
+        uint32_t     ColorKeyEnable  : 1;
+        uint32_t     ColorKeyLow     : 32;
+        uint32_t     ColorKeyHigh    : 32;
       } Contents;
 
       uint32_t Primitive[2];

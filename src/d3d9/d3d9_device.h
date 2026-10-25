@@ -107,7 +107,7 @@ namespace dxvk {
 
     friend class D3D9SwapChainEx;
     friend class D3D9UserDefinedAnnotation;
-    friend class DxvkD3D8Bridge;
+    friend class DxvkLegacyD3DDeviceBridge;
   public:
 
     D3D9DeviceEx(
@@ -656,8 +656,6 @@ namespace dxvk {
 
     bool SupportsSWVP();
 
-    bool IsExtended();
-
     HWND GetWindow();
 
     Rc<DxvkDevice> GetDXVKDevice() {
@@ -906,7 +904,7 @@ namespace dxvk {
     void FlushImplicit(BOOL StrongHint);
 
     bool ChangeReportedMemory(int64_t delta) {
-      if (IsExtended())
+      if (m_d3dCompatibility.test(D3DCompatibility::D3D9Ex))
         return true;
 
       int64_t availableMemory = m_availableMemory.fetch_add(delta);
@@ -929,8 +927,30 @@ namespace dxvk {
 
     HRESULT ResetState(D3DPRESENT_PARAMETERS* pPresentationParameters);
 
+    HRESULT SetColorKeyState(DWORD stage, bool colorKeyState) {
+      if (unlikely(m_useColorKey[stage] != colorKeyState)) {
+        m_useColorKey[stage] = colorKeyState;
+        m_flags.set(D3D9DeviceFlag::DirtyFFPixelShader);
+      }
+      return D3D_OK;
+    }
+
+    HRESULT SetColorKey(DWORD stage, DWORD colorKeyLow, DWORD colorKeyHigh) {
+      if (unlikely(m_colorKeyLow[stage] != colorKeyLow || m_colorKeyHigh[stage] != colorKeyHigh)) {
+        m_colorKeyLow[stage] = colorKeyLow;
+        m_colorKeyHigh[stage] = colorKeyHigh;
+        m_flags.set(D3D9DeviceFlag::DirtyFFPixelShader);
+      }
+      return D3D_OK;
+    }
+
     HRESULT SetLegacyLightsState(bool legacyLightState) {
       m_useLegacyLights = legacyLightState;
+      return D3D_OK;
+    }
+
+    HRESULT SetAlternatePixelCenter(bool alternatePixelCenter) {
+      m_alternatePixelCenter = alternatePixelCenter;
       return D3D_OK;
     }
 
@@ -942,24 +962,8 @@ namespace dxvk {
       return m_samplerCount.load();
     }
 
-    bool IsD3D3Compatible() const {
-      return m_isD3D3Compatible;
-    }
-
-    bool IsD3D5Compatible() const {
-      return m_isD3D5Compatible;
-    }
-
-    bool IsD3D6Compatible() const {
-      return m_isD3D6Compatible;
-    }
-
-    bool IsD3D7Compatible() const {
-      return m_isD3D7Compatible;
-    }
-
-    bool IsD3D8Compatible() const {
-      return m_isD3D8Compatible;
+    bool IsD3DCompatibile(D3DCompatibility d3dCompatibility) const {
+      return m_d3dCompatibility.test(d3dCompatibility);
     }
 
   private:
@@ -1296,14 +1300,19 @@ namespace dxvk {
     D3D9ShaderMasks                 m_psShaderMasks = FixedFunctionMask;
 
     bool                            m_isSWVP;
-    bool                            m_isD3D3Compatible;
-    bool                            m_isD3D5Compatible;
-    bool                            m_isD3D6Compatible;
-    bool                            m_isD3D7Compatible;
-    bool                            m_isD3D8Compatible;
+
+    // D3D7 and earlier texture color keying
+    std::array<bool,
+      caps::MaxSimultaneousTextures> m_useColorKey = { };
+    std::array<DWORD,
+      caps::MaxSimultaneousTextures> m_colorKeyLow = { };
+    std::array<DWORD,
+      caps::MaxSimultaneousTextures> m_colorKeyHigh = { };
 
     // D3D6 and earlier legacy light model state
     bool                            m_useLegacyLights = false;
+    // Fixed function VS alternate pixel center hack
+    bool                            m_alternatePixelCenter = false;
 
     bool                            m_amdATOC         = false;
     bool                            m_nvATOC          = false;
@@ -1346,7 +1355,8 @@ namespace dxvk {
     // references objects that can call back into the device when freed.
     Direct3DState9                  m_state;
 
-    DxvkD3D8Bridge                  m_d3d8Bridge;
+    DxvkLegacyD3DDeviceBridge       m_legacyD3DBridge;
+    D3DCompatibilityFlags           m_d3dCompatibility;
   };
 
 }
